@@ -1,20 +1,30 @@
 # Sphero RVR MCP Server
 
-An MCP (Model Context Protocol) server that enables Claude AI to control a [Sphero RVR](https://sphero.com/collections/rvr) robot. Run this on a Raspberry Pi connected to your RVR, and use Claude Code to drive, control LEDs, read sensors, and more.
+An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that enables AI assistants to control a [Sphero RVR](https://sphero.com/collections/rvr) robot. Run this on a Raspberry Pi connected to your RVR, and use any MCP-compatible client to drive, control LEDs, read sensors, and more.
 
 ## Features
 
 - **Full RVR Control**: Movement, LEDs, sensors, battery monitoring, IR communication
 - **Safety System**: Configurable speed limits, auto-stop timeout, emergency stop
 - **Sensor Streaming**: Background streaming with cached data access
-- **Natural Language Control**: Let Claude drive your robot with conversational commands
+- **Natural Language Control**: Let AI drive your robot with conversational commands
+- **Client Agnostic**: Works with any MCP-compatible client
+
+## Compatible MCP Clients
+
+- [Claude Code](https://claude.com/claude-code) (CLI)
+- [Claude Desktop](https://claude.ai/download)
+- [Cursor](https://cursor.sh/)
+- [Zed](https://zed.dev/)
+- [Continue.dev](https://continue.dev/)
+- Any custom client using the [MCP SDK](https://modelcontextprotocol.io/sdks)
 
 ## Requirements
 
 - Raspberry Pi 3 or newer (connected to Sphero RVR via serial)
-- Python 3.10.19 (required for Sphero SDK compatibility)
+- Python 3.10+ (3.10.x recommended for Sphero SDK compatibility)
 - Sphero RVR with serial connection to Pi
-- Internet connection (for Claude Code API access)
+- An MCP-compatible client
 
 ## Installation
 
@@ -41,7 +51,8 @@ export PYTHONPATH="${PYTHONPATH}:${HOME}/sphero-sdk-raspberrypi-python"
 **Option B: Install from source**
 
 ```bash
-cd /path/to/sphero_development
+git clone https://github.com/jsperson/sphero_rvr_mcp.git
+cd sphero_rvr_mcp
 
 # Install the package in development mode
 pip install -e .
@@ -65,20 +76,20 @@ This will verify:
 - Serial port exists and is accessible
 - Current configuration settings
 
-### 4. Install Claude Code
+### 4. Configure Your MCP Client
+
+The server runs via stdio. Configure your MCP client with:
+
+- **Command**: `python -m sphero_rvr_mcp`
+- **Environment**: `PYTHONPATH` must include the Sphero SDK path
+
+#### Claude Code
 
 ```bash
-# Install Node.js if not already installed
-curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# Install Claude Code
-npm install -g @anthropic-ai/claude-code
+claude mcp add sphero-rvr -c "python -m sphero_rvr_mcp"
 ```
 
-### 5. Configure Claude Code
-
-Create or edit `~/.claude.json` (replace `<your-home-dir>` with your home path, e.g., `/home/pi`):
+Or edit `~/.claude.json`:
 
 ```json
 {
@@ -95,11 +106,27 @@ Create or edit `~/.claude.json` (replace `<your-home-dir>` with your home path, 
 }
 ```
 
-Or use the CLI:
+#### Claude Desktop
 
-```bash
-claude mcp add sphero-rvr -c "python -m sphero_rvr_mcp"
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "sphero-rvr": {
+      "command": "python",
+      "args": ["-m", "sphero_rvr_mcp"],
+      "env": {
+        "PYTHONPATH": "<path-to>/sphero-sdk-raspberrypi-python"
+      }
+    }
+  }
+}
 ```
+
+#### Other Clients
+
+Refer to your client's MCP configuration documentation. The server uses stdio transport.
 
 ## Configuration
 
@@ -114,15 +141,9 @@ Environment variables (optional):
 
 ## Usage
 
-### Start Claude Code
-
-```bash
-claude
-```
-
 ### Example Commands
 
-Once Claude Code is running with the MCP server connected:
+Once your MCP client is connected to the server:
 
 ```
 You: Connect to the RVR
@@ -250,7 +271,7 @@ You: Clear the emergency stop
 ## Project Structure
 
 ```
-sphero_development/
+sphero_rvr_mcp/
 ├── pyproject.toml              # Package configuration
 ├── README.md                   # This file
 ├── LICENSE                     # MIT License
