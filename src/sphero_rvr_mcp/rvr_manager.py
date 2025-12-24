@@ -111,28 +111,39 @@ class RvrManager:
 
             self._rvr = SpheroRvrAsync(dal=self._dal)
 
-            # Wake up the RVR
-            await self._rvr.wake()
+            timeout = self._config.wake_timeout_seconds
+
+            # Wake up the RVR with timeout
+            try:
+                await asyncio.wait_for(self._rvr.wake(), timeout=timeout)
+            except asyncio.TimeoutError:
+                raise ConnectionError(f"RVR wake() timed out after {timeout}s - is the RVR powered on?")
 
             # Wait for RVR to be ready
             await asyncio.sleep(2)
 
-            # Get system info
+            # Get system info with timeouts
             try:
-                fw_response = await self._rvr.get_main_application_version()
+                fw_response = await asyncio.wait_for(
+                    self._rvr.get_main_application_version(),
+                    timeout=timeout
+                )
                 if fw_response:
                     major = fw_response.get('major', 0)
                     minor = fw_response.get('minor', 0)
                     patch = fw_response.get('patch', 0)
                     self._firmware_version = f"{major}.{minor}.{patch}"
-            except Exception:
+            except (asyncio.TimeoutError, Exception):
                 self._firmware_version = "unknown"
 
             try:
-                mac_response = await self._rvr.get_bluetooth_advertising_name()
+                mac_response = await asyncio.wait_for(
+                    self._rvr.get_bluetooth_advertising_name(),
+                    timeout=timeout
+                )
                 if mac_response:
                     self._mac_address = mac_response.get('name', 'unknown')
-            except Exception:
+            except (asyncio.TimeoutError, Exception):
                 self._mac_address = "unknown"
 
             self._state = RvrConnectionState.CONNECTED
