@@ -1,0 +1,57 @@
+[project]
+name = "sphero-rvr-mcp"
+version = "0.1.0"
+description = "MCP server for controlling Sphero RVR with Claude AI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Jason Scott Person", email = "jsperson+rvr@gmail.com" }
+]
+keywords = [
+    "sphero",
+    "rvr",
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "robotics",
+    "raspberry-pi",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "fastmcp>=2.0.0",
+    "pydantic>=2.0.0",
+    "nest_asyncio>=1.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/jsperson/sphero_rvr_mcp"
+Repository = "https://github.com/jsperson/sphero_rvr_mcp"
+Issues = "https://github.com/jsperson/sphero_rvr_mcp/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[project.scripts]
+sphero-rvr-mcp = "sphero_rvr_mcp.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sphero_rvr_mcp"]
