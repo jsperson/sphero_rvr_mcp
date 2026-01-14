@@ -1,7 +1,7 @@
 [project]
 name = "sphero-rvr-mcp"
-version = "0.1.2"
-description = "MCP server for controlling Sphero RVR with Claude AI"
+version = "0.2.0"
+description = "Production-grade MCP server for controlling Sphero RVR with Claude AI - featuring command queue, circuit breaker, event bus, and comprehensive observability"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -33,7 +33,10 @@ classifiers = [
 dependencies = [
     "fastmcp>=2.0.0",
     "pydantic>=2.0.0",
-    "nest_asyncio>=1.6.0",
+    "structlog>=24.1.0",
+    "prometheus-client>=0.20.0",
+    "tenacity>=8.2.0",
+    "nest-asyncio>=1.6.0",  # Required for Sphero SDK compatibility
 ]
 
 [project.urls]
@@ -44,6 +47,8 @@ Issues = "https://github.com/jsperson/sphero_rvr_mcp/issues"
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.2.0",
 ]
 
 [project.scripts]
