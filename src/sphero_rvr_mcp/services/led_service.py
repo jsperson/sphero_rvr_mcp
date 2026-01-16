@@ -2,7 +2,7 @@
 
 from sphero_sdk import RvrLedGroups
 
-from ..core.command_queue import CommandQueue, CommandPriority
+from ..core.command_queue import CommandQueue
 from ..hardware.connection_manager import ConnectionManager
 from ..observability.logging import get_logger
 
@@ -69,7 +69,7 @@ class LEDService:
                 )
 
             await self._command_queue.submit(
-                led_command, priority=CommandPriority.LOW, timeout=0.5
+                led_command, timeout=0.5
             )
 
             return {"success": True, "red": r, "green": g, "blue": b}
@@ -113,7 +113,7 @@ class LEDService:
                 )
 
             await self._command_queue.submit(
-                led_command, priority=CommandPriority.LOW, timeout=0.5
+                led_command, timeout=0.5
             )
 
             return {

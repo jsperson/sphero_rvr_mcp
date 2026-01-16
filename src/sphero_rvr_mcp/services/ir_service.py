@@ -1,6 +1,6 @@
 """IR communication service."""
 
-from ..core.command_queue import CommandQueue, CommandPriority
+from ..core.command_queue import CommandQueue
 from ..hardware.connection_manager import ConnectionManager
 from ..observability.logging import get_logger
 
@@ -47,7 +47,7 @@ class IRService:
                 )
 
             await self._command_queue.submit(
-                ir_command, priority=CommandPriority.LOW, timeout=1.0
+                ir_command, timeout=1.0
             )
 
             return {"success": True, "code": code, "strength": strength}
@@ -77,7 +77,7 @@ class IRService:
                 )
 
             await self._command_queue.submit(
-                ir_command, priority=CommandPriority.LOW, timeout=1.0
+                ir_command, timeout=1.0
             )
 
             return {"success": True, "far_code": far_code, "near_code": near_code}
@@ -98,7 +98,7 @@ class IRService:
                 await self._connection_manager.rvr.stop_robot_to_robot_infrared_broadcasting()
 
             await self._command_queue.submit(
-                ir_command, priority=CommandPriority.LOW, timeout=1.0
+                ir_command, timeout=1.0
             )
 
             return {"success": True, "message": "IR broadcasting stopped"}

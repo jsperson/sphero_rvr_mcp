@@ -11,9 +11,7 @@ from sphero_sdk import SpheroRvrAsync
 
 from ..core.state_manager import StateManager
 from ..core.exceptions import SafetyError
-from ..core.event_bus import EventBus, create_safety_event
 from ..observability.logging import get_logger, log_safety_event
-from ..observability import metrics
 
 logger = get_logger(__name__)
 
@@ -32,18 +30,15 @@ class SafetyMonitor:
         self,
         rvr: SpheroRvrAsync,
         state_manager: StateManager,
-        event_bus: EventBus,
     ):
         """Initialize safety monitor.
 
         Args:
             rvr: RVR SDK instance
             state_manager: State management
-            event_bus: Event bus for safety events
         """
         self._rvr = rvr
         self._state_manager = state_manager
-        self._event_bus = event_bus
         self._timeout_task: Optional[asyncio.Task] = None
         self._timeout_lock = asyncio.Lock()
 
@@ -57,13 +52,7 @@ class SafetyMonitor:
         await self._state_manager.safety_state.set_emergency_stop(True)
 
         # Record metrics and log
-        metrics.record_emergency_stop()
         log_safety_event(logger, "emergency_stop_activated")
-
-        # Publish event
-        await self._event_bus.publish(
-            create_safety_event("emergency_stop", {"active": True})
-        )
 
         # Stop motors immediately
         try:
@@ -95,13 +84,7 @@ class SafetyMonitor:
         await self._state_manager.safety_state.set_emergency_stop(False)
 
         # Record metrics and log
-        metrics.clear_emergency_stop()
         log_safety_event(logger, "emergency_stop_cleared")
-
-        # Publish event
-        await self._event_bus.publish(
-            create_safety_event("emergency_stop", {"active": False})
-        )
 
         return {"success": True, "message": "Emergency stop cleared"}
 
@@ -132,7 +115,6 @@ class SafetyMonitor:
         await self._state_manager.safety_state.set_speed_limit(percent)
 
         # Update metrics
-        metrics.update_speed_limit(percent)
 
         log_safety_event(logger, "speed_limit_changed", percent=percent)
 
@@ -166,7 +148,6 @@ class SafetyMonitor:
         was_limited = limited_speed < speed
 
         if was_limited:
-            metrics.record_speed_limit_applied()
             log_safety_event(
                 logger,
                 "speed_limited",
@@ -195,7 +176,6 @@ class SafetyMonitor:
         was_limited = abs(limited_velocity) < abs(velocity)
 
         if was_limited:
-            metrics.record_speed_limit_applied()
             log_safety_event(
                 logger,
                 "velocity_limited",

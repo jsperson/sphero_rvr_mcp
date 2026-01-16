@@ -1,8 +1,7 @@
-"""Efficient sensor streaming with event bus integration.
+"""Efficient sensor streaming with caching.
 
 This module replaces sensor_manager.py with optimized sensor handling that:
 - Uses pre-built service map (no dir() loop)
-- Integrates with event bus for distribution
 - Provides thread-safe caching
 - Includes comprehensive metrics
 """
@@ -13,11 +12,9 @@ from typing import Optional, List, Dict, Any
 
 from sphero_sdk import SpheroRvrAsync, RvrStreamingServices
 
-from ..core.event_bus import EventBus, create_sensor_event
 from ..core.state_manager import StateManager
 from ..core.exceptions import SensorError
 from ..observability.logging import get_logger, log_sensor_event
-from ..observability import metrics
 
 logger = get_logger(__name__)
 
@@ -38,11 +35,10 @@ SENSOR_SERVICE_MAP = {
 
 
 class SensorStreamManager:
-    """Efficient sensor streaming with event bus integration.
+    """Efficient sensor streaming with sensor caching.
 
     Features:
     - Pre-built service map (no runtime introspection)
-    - Event bus integration for decoupled distribution
     - Thread-safe caching with TTL
     - Comprehensive metrics and logging
     """
@@ -51,18 +47,15 @@ class SensorStreamManager:
         self,
         rvr: SpheroRvrAsync,
         state_manager: StateManager,
-        event_bus: EventBus,
     ):
         """Initialize sensor stream manager.
 
         Args:
             rvr: RVR SDK instance
             state_manager: State management
-            event_bus: Event bus for sensor data distribution
         """
         self._rvr = rvr
         self._state_manager = state_manager
-        self._event_bus = event_bus
         self._registered_handlers: Dict[str, Any] = {}
 
     async def start_streaming(self, sensors: List[str], interval_ms: int = 250) -> dict:
@@ -106,7 +99,6 @@ class SensorStreamManager:
                 started_sensors.append(sensor)
 
                 log_sensor_event(logger, sensor, "streaming_started")
-                metrics.sensor_events_total.labels(sensor=sensor).inc()
 
             except Exception as e:
                 logger.error("sensor_streaming_failed", sensor=sensor, error=str(e))
@@ -123,7 +115,6 @@ class SensorStreamManager:
             # Start streaming
             try:
                 await self._rvr.sensor_control.start(interval=interval_ms)
-                metrics.sensor_streaming_active.set(1)
                 logger.info("sensor_streaming_started", sensors=started_sensors, interval_ms=interval_ms)
             except Exception as e:
                 logger.error("sensor_streaming_start_failed", error=str(e))
@@ -159,7 +150,6 @@ class SensorStreamManager:
             await self._state_manager.sensor_state.set_streaming(active=False, sensors=[], interval_ms=250)
             await self._state_manager.sensor_state.clear_cache()
 
-            metrics.sensor_streaming_active.set(0)
             log_sensor_event(logger, "all", "streaming_stopped")
 
             return {"success": True, "message": "Streaming stopped"}
@@ -199,7 +189,6 @@ class SensorStreamManager:
                 }
 
                 # Record metrics
-                metrics.record_sensor_event(sensor, age_ms=cached["age_ms"])
 
         return {"success": True, "sensors": results}
 
@@ -296,7 +285,6 @@ class SensorStreamManager:
                 timeout=timeout,
             )
             percentage = result.get("percentage", 0)
-            metrics.update_battery_metrics(percentage, None)
             return percentage
 
         except asyncio.TimeoutError:
@@ -321,13 +309,74 @@ class SensorStreamManager:
                 # Update cache
                 await self._state_manager.sensor_state.update_cache(sensor, data)
 
-                # Publish to event bus
-                event = create_sensor_event(sensor, data)
-                await self._event_bus.publish(event)
-
-                metrics.sensor_events_total.labels(sensor=sensor).inc()
 
             except Exception as e:
                 logger.error("sensor_handler_failed", sensor=sensor, error=str(e))
 
         return handler
+
+    async def ensure_locator_streaming(self, interval_ms: int = 50) -> bool:
+        """Ensure locator sensor is streaming.
+
+        Starts locator streaming if not already enabled.
+
+        Args:
+            interval_ms: Streaming interval in milliseconds (default: 50ms for high precision)
+
+        Returns:
+            True if locator is streaming
+
+        Raises:
+            SensorError: Failed to start streaming
+        """
+        # Check if locator is already streaming
+        state_snapshot = await self._state_manager.sensor_state.snapshot()
+        streaming_sensors = state_snapshot.get("streaming_sensors", [])
+
+        if "locator" in streaming_sensors:
+            return True
+
+        # Start locator streaming
+        result = await self.start_streaming(["locator"], interval_ms)
+
+        if not result["success"] or "locator" not in result["started_sensors"]:
+            raise SensorError("Failed to start locator streaming")
+
+        # Wait for first data
+        await asyncio.sleep(0.1)
+
+        return True
+
+    async def get_locator_position(self, timeout: float = 1.0) -> Optional[Dict[str, float]]:
+        """Get current X, Y position from locator streaming cache.
+
+        Returns:
+            Dict with x, y position in meters, or None if not available
+
+        Raises:
+            SensorError: Locator not streaming or data stale
+        """
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            # Get cached locator data
+            data = await self.get_sensor_data(["locator"])
+
+            if data["success"] and "locator" in data["sensors"]:
+                locator_data = data["sensors"]["locator"]
+
+                if locator_data.get("available", False):
+                    sensor_data = locator_data["data"]
+
+                    # Extract position from SDK format
+                    if "Locator" in sensor_data:
+                        locator = sensor_data["Locator"]
+                        return {
+                            "x": locator.get("X", 0.0),
+                            "y": locator.get("Y", 0.0),
+                        }
+
+            # Wait before retry
+            await asyncio.sleep(0.05)
+
+        return None

@@ -8,8 +8,6 @@ import asyncio
 from typing import Optional
 
 from .core.command_queue import CommandQueue
-from .core.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
-from .core.event_bus import EventBus
 from .core.state_manager import StateManager
 from .hardware.connection_manager import ConnectionManager
 from .hardware.sensor_stream_manager import SensorStreamManager
@@ -48,14 +46,11 @@ class RVRClient:
 
         # Core components
         self.state_manager = StateManager()
-        self.circuit_breaker = CircuitBreaker(CircuitBreakerConfig())
         self.command_queue = CommandQueue(max_queue_size=100)
-        self.event_bus = EventBus(max_queue_size=1000)
 
         # Hardware managers
         self.connection_manager = ConnectionManager(
             state_manager=self.state_manager,
-            circuit_breaker=self.circuit_breaker,
         )
 
         # Services (created after connection)
@@ -78,9 +73,6 @@ class RVRClient:
 
         # Start command queue
         await self.command_queue.start()
-
-        # Start event bus
-        await self.event_bus.start()
 
         self._initialized = True
         self.logger.info("RVR client initialized")
@@ -111,13 +103,11 @@ class RVRClient:
             sensor_manager = SensorStreamManager(
                 rvr=self.connection_manager.rvr,
                 state_manager=self.state_manager,
-                event_bus=self.event_bus,
             )
 
             safety_monitor = SafetyMonitor(
                 rvr=self.connection_manager.rvr,
                 state_manager=self.state_manager,
-                event_bus=self.event_bus,
             )
 
             self._movement_service = MovementService(
@@ -153,7 +143,6 @@ class RVRClient:
 
         if self._initialized:
             await self.command_queue.stop()
-            await self.event_bus.stop()
             self._initialized = False
             self.logger.info("RVR client shutdown")
 
