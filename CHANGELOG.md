@@ -5,6 +5,92 @@ All notable changes to the Sphero RVR MCP Server will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-01-29
+
+### Added - Full SDK Sensor Coverage
+
+This release adds **22 new MCP tools** for comprehensive RVR sensor and system access, plus fixes for 4 commands that had incorrect protocol parameters.
+
+#### New Tools (22 total)
+
+**Temperature & Thermal (2 tools):**
+- `get_temperature` - Motor temperatures in Celsius
+- `get_motor_thermal_protection_status` - Thermal protection state (ok/warning/critical)
+
+**System Information (6 tools):**
+- `get_firmware_version` - Nordic and MCU firmware versions
+- `get_processor_name` - Processor identifiers (Nordic/ST)
+- `get_mac_address` - Bluetooth MAC address
+- `get_board_revision` - PCB board revisions
+- `get_sku` - Product SKU string
+- `get_core_uptime` - Uptime in milliseconds
+
+**Extended Battery (3 tools):**
+- `get_battery_voltage` - Calibrated voltage in volts
+- `get_battery_voltage_state` - State (ok/low/critical)
+- `get_battery_thresholds` - Voltage thresholds
+
+**Motion Sensors (3 tools):**
+- `get_encoder_counts` - Wheel encoder ticks
+- `get_magnetometer` - Compass with heading and cardinal direction
+- `calibrate_magnetometer` - Calibrate compass to north
+
+**Motor Protection (3 tools):**
+- `get_motor_fault_state` - Check for motor faults
+- `enable_motor_stall_notify` - Enable stall detection
+- `enable_motor_fault_notify` - Enable fault detection
+
+**IR Follow/Evade (5 tools):**
+- `start_ir_following` - Follow an IR-broadcasting robot
+- `stop_ir_following` - Stop following
+- `start_ir_evading` - Evade an IR-broadcasting robot
+- `stop_ir_evading` - Stop evading
+- `get_ir_readings` - Read IR sensor values (bot-to-bot)
+
+#### Bug Fixes
+
+**Fixed Commands (4):**
+| Command | Issue | Fix |
+|---------|-------|-----|
+| `get_processor_name` | Wrong CID (0x01) | Changed to correct CID (0x1F) |
+| `get_ir_readings` | Wrong target (BT) and response parsing | Changed to MCU target, fixed response format (4 bytes packed) |
+| `get_temperature` | Missing sensor ID parameters | Added sensor IDs for left/right motors |
+| `get_battery_voltage` | Missing reading type parameter | Added calibrated reading type (0) |
+
+**Root Causes (from SDK analysis):**
+- `get_processor_name`: SDK uses CID 0x1F, not 0x01
+- `get_ir_readings`: SDK targets MCU (target=2), response is single uint32 with 8-bit values packed
+- `get_temperature`: SDK passes sensor ID array as input parameter
+- `get_battery_voltage`: SDK passes BatteryVoltageReadingType enum value
+
+#### Enhancements
+
+**Magnetometer Heading Calculation:**
+- Added `heading` field to `get_magnetometer` response (0-360°)
+- Added `cardinal` field with direction (N, NE, E, SE, S, SW, W, NW)
+- Uses formula `atan2(X, Y)` based on RVR's coordinate system (Y-axis forward)
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "x": 67,
+  "y": -301,
+  "z": -95,
+  "heading": 167.5,
+  "cardinal": "S"
+}
+```
+
+#### Files Modified
+
+- `src/sphero_rvr_mcp/protocol/commands.py` - Added 22 new command builders
+- `src/sphero_rvr_mcp/protocol/direct_serial.py` - Added 22 new response parsers
+- `src/sphero_rvr_mcp/protocol/packet.py` - Added DID_SYSTEM_INFO constant
+- `src/sphero_rvr_mcp/server.py` - Added 22 new MCP tools + heading calculation
+
+---
+
 ## [0.2.0] - 2026-01-14
 
 ### Changed - Complete Architectural Rewrite

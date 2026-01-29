@@ -376,3 +376,368 @@ class DirectSerial:
         time.sleep(estimated_time)
 
         return True
+
+    # ========================================================================
+    # Phase 1: Temperature Sensors
+    # ========================================================================
+
+    def get_temperature(self, timeout: float = 1.0) -> Optional[dict]:
+        """Get temperature sensor readings.
+
+        Returns:
+            Dict with sensor temps in Celsius:
+            {'left_motor': float, 'right_motor': float, 'nordic_die': float}
+            or None on error
+        """
+        import struct
+        packet = commands.get_temperature()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 5:
+            # Response format: [id0, temp0(f32), id1, temp1(f32), ...]
+            result = {}
+            sensor_names = {4: 'left_motor', 5: 'right_motor', 8: 'nordic_die'}
+            i = 0
+            while i + 4 < len(response.data):
+                sensor_id = response.data[i]
+                temp = struct.unpack('>f', response.data[i+1:i+5])[0]
+                if sensor_id in sensor_names:
+                    result[sensor_names[sensor_id]] = temp
+                i += 5
+            return result if result else None
+        return None
+
+    def get_thermal_protection_status(self, timeout: float = 1.0) -> Optional[dict]:
+        """Get motor thermal protection status.
+
+        Returns:
+            Dict with thermal protection info:
+            {'left_temp': float, 'left_status': int,
+             'right_temp': float, 'right_status': int}
+            Status: 0=ok, 1=warning, 2=critical
+            or None on error
+        """
+        import struct
+        packet = commands.get_thermal_protection_status()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 10:
+            # Response: left_temp(f32), left_status(u8), right_temp(f32), right_status(u8)
+            left_temp = struct.unpack('>f', response.data[0:4])[0]
+            left_status = response.data[4]
+            right_temp = struct.unpack('>f', response.data[5:9])[0]
+            right_status = response.data[9]
+            return {
+                'left_temp': left_temp,
+                'left_status': left_status,
+                'right_temp': right_temp,
+                'right_status': right_status,
+            }
+        return None
+
+    # ========================================================================
+    # Phase 2: System Information
+    # ========================================================================
+
+    def get_firmware_version(self, target: int = 0x01, timeout: float = 1.0) -> Optional[dict]:
+        """Get firmware version.
+
+        Args:
+            target: 0x01 for Nordic (BT), 0x02 for ST MCU
+
+        Returns:
+            Dict with 'major', 'minor', 'revision' or None on error
+        """
+        import struct
+        from .packet import TARGET_BT, TARGET_MCU
+        target_val = TARGET_BT if target == 0x01 else TARGET_MCU
+        packet = commands.get_main_app_version(target_val)
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 6:
+            major, minor, revision = struct.unpack('>HHH', response.data[:6])
+            return {'major': major, 'minor': minor, 'revision': revision}
+        return None
+
+    def get_mac_address(self, timeout: float = 1.0) -> Optional[str]:
+        """Get Bluetooth MAC address.
+
+        Returns:
+            MAC address string or None on error
+        """
+        packet = commands.get_mac_address()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) > 0:
+            # Null-terminated string
+            mac = response.data.split(b'\x00')[0].decode('ascii', errors='ignore')
+            return mac if mac else None
+        return None
+
+    def get_board_revision(self, target: int = 0x01, timeout: float = 1.0) -> Optional[int]:
+        """Get PCB board revision.
+
+        Args:
+            target: 0x01 for Nordic (BT), 0x02 for ST MCU
+
+        Returns:
+            Board revision number or None on error
+        """
+        from .packet import TARGET_BT, TARGET_MCU
+        target_val = TARGET_BT if target == 0x01 else TARGET_MCU
+        packet = commands.get_board_revision(target_val)
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 1:
+            return response.data[0]
+        return None
+
+    def get_processor_name(self, target: int = 0x01, timeout: float = 1.0) -> Optional[str]:
+        """Get processor identifier string.
+
+        Args:
+            target: 0x01 for Nordic (BT), 0x02 for ST MCU
+
+        Returns:
+            Processor name string or None on error
+        """
+        from .packet import TARGET_BT, TARGET_MCU
+        target_val = TARGET_BT if target == 0x01 else TARGET_MCU
+        packet = commands.get_processor_name(target_val)
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) > 0:
+            # Null-terminated string
+            name = response.data.split(b'\x00')[0].decode('ascii', errors='ignore')
+            return name if name else None
+        return None
+
+    def get_sku(self, timeout: float = 1.0) -> Optional[str]:
+        """Get product SKU string.
+
+        Returns:
+            SKU string or None on error
+        """
+        packet = commands.get_sku()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) > 0:
+            # Null-terminated string
+            sku = response.data.split(b'\x00')[0].decode('ascii', errors='ignore')
+            return sku if sku else None
+        return None
+
+    def get_core_uptime(self, target: int = 0x01, timeout: float = 1.0) -> Optional[int]:
+        """Get core uptime in milliseconds since power-on.
+
+        Args:
+            target: 0x01 for Nordic (BT), 0x02 for ST MCU
+
+        Returns:
+            Uptime in milliseconds or None on error
+        """
+        import struct
+        from .packet import TARGET_BT, TARGET_MCU
+        target_val = TARGET_BT if target == 0x01 else TARGET_MCU
+        packet = commands.get_core_uptime(target_val)
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 8:
+            uptime = struct.unpack('>Q', response.data[:8])[0]
+            return uptime
+        return None
+
+    # ========================================================================
+    # Phase 3: Extended Battery Info
+    # ========================================================================
+
+    def get_battery_voltage(self, timeout: float = 1.0) -> Optional[float]:
+        """Get battery voltage in volts.
+
+        Returns:
+            Voltage as float or None on error
+        """
+        import struct
+        packet = commands.get_battery_voltage()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 4:
+            voltage = struct.unpack('>f', response.data[:4])[0]
+            return voltage
+        return None
+
+    def get_battery_voltage_state(self, timeout: float = 1.0) -> Optional[dict]:
+        """Get battery voltage state.
+
+        Returns:
+            Dict with 'state' (0=unknown, 1=ok, 2=low, 3=critical)
+            and 'state_name' string, or None on error
+        """
+        packet = commands.get_battery_voltage_state()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 1:
+            state = response.data[0]
+            state_names = {0: 'unknown', 1: 'ok', 2: 'low', 3: 'critical'}
+            return {
+                'state': state,
+                'state_name': state_names.get(state, 'unknown'),
+            }
+        return None
+
+    def get_battery_thresholds(self, timeout: float = 1.0) -> Optional[dict]:
+        """Get battery voltage thresholds.
+
+        Returns:
+            Dict with 'critical', 'low', 'hysteresis' voltages
+            or None on error
+        """
+        import struct
+        packet = commands.get_battery_thresholds()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 12:
+            critical, low, hysteresis = struct.unpack('>fff', response.data[:12])
+            return {
+                'critical': critical,
+                'low': low,
+                'hysteresis': hysteresis,
+            }
+        return None
+
+    # ========================================================================
+    # Phase 4: Motion Sensors (Point Reads)
+    # ========================================================================
+
+    def get_encoder_counts(self, timeout: float = 1.0) -> Optional[dict]:
+        """Get wheel encoder tick counts.
+
+        Returns:
+            Dict with 'left' and 'right' tick counts or None on error
+        """
+        import struct
+        packet = commands.get_encoder_counts()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 8:
+            left, right = struct.unpack('>ii', response.data[:8])
+            return {'left': left, 'right': right}
+        return None
+
+    def get_magnetometer(self, timeout: float = 1.0) -> Optional[dict]:
+        """Get magnetometer X, Y, Z readings.
+
+        Returns:
+            Dict with 'x', 'y', 'z' magnetic field values or None on error
+        """
+        import struct
+        packet = commands.get_magnetometer()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 12:
+            x, y, z = struct.unpack('>fff', response.data[:12])
+            return {'x': x, 'y': y, 'z': z}
+        return None
+
+    def calibrate_magnetometer(self) -> bool:
+        """Start magnetometer calibration (calibrate to north).
+
+        This is an async operation - RVR will notify when complete.
+
+        Returns:
+            True if command sent successfully
+        """
+        return self._send(commands.calibrate_magnetometer())
+
+    # ========================================================================
+    # Phase 5: Motor Protection
+    # ========================================================================
+
+    def get_motor_fault_state(self, timeout: float = 1.0) -> Optional[bool]:
+        """Check if motor fault is currently active.
+
+        Returns:
+            True if fault active, False if no fault, None on error
+        """
+        packet = commands.get_motor_fault_state()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 1:
+            return response.data[0] != 0
+        return None
+
+    def enable_motor_stall_notify(self, enabled: bool = True) -> bool:
+        """Enable/disable motor stall detection notifications.
+
+        Args:
+            enabled: True to enable, False to disable
+
+        Returns:
+            True if command sent successfully
+        """
+        return self._send(commands.enable_motor_stall_notify(enabled))
+
+    def enable_motor_fault_notify(self, enabled: bool = True) -> bool:
+        """Enable/disable motor fault detection notifications.
+
+        Args:
+            enabled: True to enable, False to disable
+
+        Returns:
+            True if command sent successfully
+        """
+        return self._send(commands.enable_motor_fault_notify(enabled))
+
+    # ========================================================================
+    # Phase 6: IR Follow/Evade
+    # ========================================================================
+
+    def start_ir_following(self, far_code: int, near_code: int) -> bool:
+        """Start following an IR-broadcasting robot.
+
+        Args:
+            far_code: IR code to follow when far (0-7)
+            near_code: IR code to follow when near (0-7)
+
+        Returns:
+            True if command sent successfully
+        """
+        return self._send(commands.start_ir_following(far_code, near_code))
+
+    def stop_ir_following(self) -> bool:
+        """Stop IR following behavior.
+
+        Returns:
+            True if command sent successfully
+        """
+        return self._send(commands.stop_ir_following())
+
+    def start_ir_evading(self, far_code: int, near_code: int) -> bool:
+        """Start evading an IR-broadcasting robot.
+
+        Args:
+            far_code: IR code to evade when far (0-7)
+            near_code: IR code to evade when near (0-7)
+
+        Returns:
+            True if command sent successfully
+        """
+        return self._send(commands.start_ir_evading(far_code, near_code))
+
+    def stop_ir_evading(self) -> bool:
+        """Stop IR evading behavior.
+
+        Returns:
+            True if command sent successfully
+        """
+        return self._send(commands.stop_ir_evading())
+
+    def get_ir_readings(self, timeout: float = 1.0) -> Optional[dict]:
+        """Get all 4 IR sensor readings.
+
+        Returns:
+            Dict with 'front_left', 'front_right', 'back_right', 'back_left'
+            values (0-255) or None on error. Value of 255 means no IR message
+            received on that sensor.
+        """
+        import struct
+        packet = commands.get_ir_readings()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 4:
+            # Response is a single uint32_t with 8-bit values packed:
+            # bits 0-7: front_left, bits 8-15: front_right,
+            # bits 16-23: back_right, bits 24-31: back_left
+            sensor_data = struct.unpack('>I', response.data[:4])[0]
+            return {
+                'front_left': sensor_data & 0xFF,
+                'front_right': (sensor_data >> 8) & 0xFF,
+                'back_right': (sensor_data >> 16) & 0xFF,
+                'back_left': (sensor_data >> 24) & 0xFF,
+            }
+        return None

@@ -8,6 +8,7 @@ Features:
 """
 
 import asyncio
+import math
 from fastmcp import FastMCP
 
 from .config import load_config_from_env
@@ -25,6 +26,49 @@ log_format = config.get("log_format", "json")
 configure_logging(log_level, log_format)
 
 logger = get_logger(__name__)
+
+
+def calculate_heading_from_magnetometer(x: float, y: float) -> float:
+    """Calculate compass heading from magnetometer X, Y readings.
+
+    Args:
+        x: Magnetometer X reading (points right on RVR)
+        y: Magnetometer Y reading (points forward on RVR)
+
+    Returns:
+        Heading in degrees (0-360), where 0=North, 90=East, 180=South, 270=West
+    """
+    heading_rad = math.atan2(x, y)
+    heading_deg = math.degrees(heading_rad)
+    # Normalize to 0-360
+    if heading_deg < 0:
+        heading_deg += 360
+    return heading_deg
+
+
+def heading_to_cardinal(heading: float) -> str:
+    """Convert heading in degrees to cardinal direction.
+
+    Args:
+        heading: Heading in degrees (0-360)
+
+    Returns:
+        Cardinal direction string (e.g., "N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    """
+    # Define cardinal directions with their center angles
+    directions = [
+        ("N", 0), ("NE", 45), ("E", 90), ("SE", 135),
+        ("S", 180), ("SW", 225), ("W", 270), ("NW", 315)
+    ]
+    # Each direction covers 45 degrees (22.5 on each side of center)
+    for name, center in directions:
+        diff = abs(heading - center)
+        if diff > 180:
+            diff = 360 - diff
+        if diff <= 22.5:
+            return name
+    return "N"  # Fallback (shouldn't happen)
+
 
 # Create FastMCP server instance
 mcp = FastMCP("sphero-rvr")
@@ -664,6 +708,342 @@ def register_tools():
         # Fallback: SDK path
         await ensure_services_initialized()
         return await _ir_service.stop_ir_broadcasting()
+
+    # ========================================================================
+    # Phase 1: Temperature Sensors
+    # ========================================================================
+
+    @mcp.tool()
+    async def get_temperature() -> dict:
+        """Get temperature sensor readings (motor and Nordic die temps).
+
+        Returns temperatures in Celsius for left_motor, right_motor, and nordic_die.
+        """
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        temps = connection_manager.direct_serial.get_temperature()
+        if temps is not None:
+            return {"success": True, **temps}
+        return {"success": False, "error": "Failed to read temperature sensors"}
+
+    @mcp.tool()
+    async def get_motor_thermal_protection_status() -> dict:
+        """Get motor thermal protection status.
+
+        Returns temperature and status for each motor.
+        Status: 0=ok, 1=warning, 2=critical
+        """
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        status = connection_manager.direct_serial.get_thermal_protection_status()
+        if status is not None:
+            # Add human-readable status names
+            status_names = {0: 'ok', 1: 'warning', 2: 'critical'}
+            status['left_status_name'] = status_names.get(status['left_status'], 'unknown')
+            status['right_status_name'] = status_names.get(status['right_status'], 'unknown')
+            return {"success": True, **status}
+        return {"success": False, "error": "Failed to read thermal protection status"}
+
+    # ========================================================================
+    # Phase 2: System Information
+    # ========================================================================
+
+    @mcp.tool()
+    async def get_firmware_version() -> dict:
+        """Get firmware version (major.minor.revision) for both processors."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        result = {"success": True}
+
+        # Get Nordic (BT) firmware version
+        nordic = connection_manager.direct_serial.get_firmware_version(target=0x01)
+        if nordic:
+            result["nordic"] = nordic
+            result["nordic_version"] = f"{nordic['major']}.{nordic['minor']}.{nordic['revision']}"
+
+        # Get ST MCU firmware version
+        mcu = connection_manager.direct_serial.get_firmware_version(target=0x02)
+        if mcu:
+            result["mcu"] = mcu
+            result["mcu_version"] = f"{mcu['major']}.{mcu['minor']}.{mcu['revision']}"
+
+        if "nordic" not in result and "mcu" not in result:
+            return {"success": False, "error": "Failed to read firmware version"}
+
+        return result
+
+    @mcp.tool()
+    async def get_mac_address() -> dict:
+        """Get Bluetooth MAC address."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        mac = connection_manager.direct_serial.get_mac_address()
+        if mac is not None:
+            return {"success": True, "mac_address": mac}
+        return {"success": False, "error": "Failed to read MAC address"}
+
+    @mcp.tool()
+    async def get_board_revision() -> dict:
+        """Get PCB board revision for both processors."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        result = {"success": True}
+
+        nordic_rev = connection_manager.direct_serial.get_board_revision(target=0x01)
+        if nordic_rev is not None:
+            result["nordic_revision"] = nordic_rev
+
+        mcu_rev = connection_manager.direct_serial.get_board_revision(target=0x02)
+        if mcu_rev is not None:
+            result["mcu_revision"] = mcu_rev
+
+        if "nordic_revision" not in result and "mcu_revision" not in result:
+            return {"success": False, "error": "Failed to read board revision"}
+
+        return result
+
+    @mcp.tool()
+    async def get_processor_name() -> dict:
+        """Get processor identifier strings for both processors."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        result = {"success": True}
+
+        nordic_name = connection_manager.direct_serial.get_processor_name(target=0x01)
+        if nordic_name:
+            result["nordic_processor"] = nordic_name
+
+        mcu_name = connection_manager.direct_serial.get_processor_name(target=0x02)
+        if mcu_name:
+            result["mcu_processor"] = mcu_name
+
+        if "nordic_processor" not in result and "mcu_processor" not in result:
+            return {"success": False, "error": "Failed to read processor name"}
+
+        return result
+
+    @mcp.tool()
+    async def get_sku() -> dict:
+        """Get product SKU string."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        sku = connection_manager.direct_serial.get_sku()
+        if sku is not None:
+            return {"success": True, "sku": sku}
+        return {"success": False, "error": "Failed to read SKU"}
+
+    @mcp.tool()
+    async def get_core_uptime() -> dict:
+        """Get core uptime in milliseconds since power-on for both processors."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        result = {"success": True}
+
+        nordic_uptime = connection_manager.direct_serial.get_core_uptime(target=0x01)
+        if nordic_uptime is not None:
+            result["nordic_uptime_ms"] = nordic_uptime
+            result["nordic_uptime_seconds"] = nordic_uptime / 1000.0
+
+        mcu_uptime = connection_manager.direct_serial.get_core_uptime(target=0x02)
+        if mcu_uptime is not None:
+            result["mcu_uptime_ms"] = mcu_uptime
+            result["mcu_uptime_seconds"] = mcu_uptime / 1000.0
+
+        if "nordic_uptime_ms" not in result and "mcu_uptime_ms" not in result:
+            return {"success": False, "error": "Failed to read uptime"}
+
+        return result
+
+    # ========================================================================
+    # Phase 3: Extended Battery Info
+    # ========================================================================
+
+    @mcp.tool()
+    async def get_battery_voltage() -> dict:
+        """Get battery voltage in volts (calibrated)."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        voltage = connection_manager.direct_serial.get_battery_voltage()
+        if voltage is not None:
+            return {"success": True, "voltage": voltage}
+        return {"success": False, "error": "Failed to read battery voltage"}
+
+    @mcp.tool()
+    async def get_battery_voltage_state() -> dict:
+        """Get battery voltage state (ok/low/critical)."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        state = connection_manager.direct_serial.get_battery_voltage_state()
+        if state is not None:
+            return {"success": True, **state}
+        return {"success": False, "error": "Failed to read battery voltage state"}
+
+    @mcp.tool()
+    async def get_battery_thresholds() -> dict:
+        """Get battery voltage thresholds (critical, low, hysteresis)."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        thresholds = connection_manager.direct_serial.get_battery_thresholds()
+        if thresholds is not None:
+            return {"success": True, **thresholds}
+        return {"success": False, "error": "Failed to read battery thresholds"}
+
+    # ========================================================================
+    # Phase 4: Motion Sensors (Point Reads)
+    # ========================================================================
+
+    @mcp.tool()
+    async def get_encoder_counts() -> dict:
+        """Get wheel encoder tick counts (left and right)."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        counts = connection_manager.direct_serial.get_encoder_counts()
+        if counts is not None:
+            return {"success": True, **counts}
+        return {"success": False, "error": "Failed to read encoder counts"}
+
+    @mcp.tool()
+    async def get_magnetometer() -> dict:
+        """Get magnetometer X, Y, Z readings with heading and cardinal direction."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        mag = connection_manager.direct_serial.get_magnetometer()
+        if mag is not None:
+            # Calculate heading and cardinal direction from X, Y
+            heading = calculate_heading_from_magnetometer(mag['x'], mag['y'])
+            cardinal = heading_to_cardinal(heading)
+            return {
+                "success": True,
+                **mag,
+                "heading": round(heading, 1),
+                "cardinal": cardinal
+            }
+        return {"success": False, "error": "Failed to read magnetometer"}
+
+    @mcp.tool()
+    async def calibrate_magnetometer() -> dict:
+        """Start magnetometer calibration (calibrate to north).
+
+        This is an async operation - the RVR will notify when complete.
+        Rotate the RVR 360 degrees during calibration.
+        """
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.calibrate_magnetometer()
+        if ok:
+            return {
+                "success": True,
+                "message": "Magnetometer calibration started. Rotate RVR 360 degrees.",
+            }
+        return {"success": False, "error": "Failed to start magnetometer calibration"}
+
+    # ========================================================================
+    # Phase 5: Motor Protection
+    # ========================================================================
+
+    @mcp.tool()
+    async def get_motor_fault_state() -> dict:
+        """Check if motor fault is currently active."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        is_fault = connection_manager.direct_serial.get_motor_fault_state()
+        if is_fault is not None:
+            return {"success": True, "is_fault": is_fault}
+        return {"success": False, "error": "Failed to read motor fault state"}
+
+    @mcp.tool()
+    async def enable_motor_stall_notify(enabled: bool = True) -> dict:
+        """Enable or disable motor stall detection notifications."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.enable_motor_stall_notify(enabled)
+        return {"success": ok, "enabled": enabled}
+
+    @mcp.tool()
+    async def enable_motor_fault_notify(enabled: bool = True) -> dict:
+        """Enable or disable motor fault detection notifications."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.enable_motor_fault_notify(enabled)
+        return {"success": ok, "enabled": enabled}
+
+    # ========================================================================
+    # Phase 6: IR Follow/Evade
+    # ========================================================================
+
+    @mcp.tool()
+    async def start_ir_following(far_code: int, near_code: int) -> dict:
+        """Start following an IR-broadcasting robot.
+
+        Args:
+            far_code: IR code to follow when far (0-7)
+            near_code: IR code to follow when near (0-7)
+        """
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.start_ir_following(far_code, near_code)
+        return {"success": ok, "far_code": far_code, "near_code": near_code}
+
+    @mcp.tool()
+    async def stop_ir_following() -> dict:
+        """Stop IR following behavior."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.stop_ir_following()
+        return {"success": ok}
+
+    @mcp.tool()
+    async def start_ir_evading(far_code: int, near_code: int) -> dict:
+        """Start evading an IR-broadcasting robot.
+
+        Args:
+            far_code: IR code to evade when far (0-7)
+            near_code: IR code to evade when near (0-7)
+        """
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.start_ir_evading(far_code, near_code)
+        return {"success": ok, "far_code": far_code, "near_code": near_code}
+
+    @mcp.tool()
+    async def stop_ir_evading() -> dict:
+        """Stop IR evading behavior."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.stop_ir_evading()
+        return {"success": ok}
+
+    @mcp.tool()
+    async def get_ir_readings() -> dict:
+        """Get all 4 IR sensor readings (front_left, front_right, back_right, back_left)."""
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        readings = connection_manager.direct_serial.get_ir_readings()
+        if readings is not None:
+            return {"success": True, **readings}
+        return {"success": False, "error": "Failed to read IR sensors"}
 
 
 # Register tools on module load

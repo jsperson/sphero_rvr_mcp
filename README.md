@@ -147,6 +147,9 @@ You: Set all LEDs to blue
 
 You: What's the battery level?
 
+You: Which direction is the rover facing?
+# Returns heading in degrees and cardinal direction (N, NE, E, SE, S, SW, W, NW)
+
 You: Turn left 45 degrees and drive backward 0.5 meters
 
 You: Emergency stop!
@@ -185,7 +188,7 @@ You: Emergency stop!
 
 LED groups: `headlight_left`, `headlight_right`, `brakelight_left`, `brakelight_right`, `status_indication_left`, `status_indication_right`, `battery_door_front`, `battery_door_rear`, `power_button_front`, `power_button_rear`, `undercarriage_white`, `all`
 
-### Sensors (6 tools)
+### Sensors (12 tools)
 | Tool | Description |
 |------|-------------|
 | `start_sensor_streaming` | Start background sensor streaming |
@@ -194,27 +197,49 @@ LED groups: `headlight_left`, `headlight_right`, `brakelight_left`, `brakelight_
 | `get_ambient_light` | Query light sensor directly |
 | `enable_color_detection` | Enable/disable color sensor LED |
 | `get_color_detection` | Query color sensor (auto LED) |
+| `get_magnetometer` | Get compass heading and cardinal direction |
+| `calibrate_magnetometer` | Calibrate compass (rotate 360°) |
+| `get_temperature` | Get motor temperatures (°C) |
+| `get_encoder_counts` | Get wheel encoder tick counts |
+| `get_motor_thermal_protection_status` | Motor thermal state (ok/warning/critical) |
+| `get_ir_readings` | Get IR sensor readings (bot-to-bot, 255=no signal) |
 
 Streamable sensors: `accelerometer`, `gyroscope`, `imu`, `locator`, `velocity`, `speed`, `quaternion`, `color_detection`, `ambient_light`, `core_time`
 
-### Battery & System (2 tools)
+### Battery & System (11 tools)
 | Tool | Description |
 |------|-------------|
-| `get_battery_status` | Battery percentage and voltage state |
+| `get_battery_status` | Battery percentage |
+| `get_battery_voltage` | Battery voltage in volts |
+| `get_battery_voltage_state` | Battery state (ok/low/critical) |
+| `get_battery_thresholds` | Voltage thresholds (critical/low/hysteresis) |
 | `get_safety_status` | Current safety settings |
+| `get_firmware_version` | Firmware versions (Nordic + MCU) |
+| `get_processor_name` | Processor identifiers (Nordic/ST) |
+| `get_mac_address` | Bluetooth MAC address |
+| `get_board_revision` | PCB board revisions |
+| `get_sku` | Product SKU |
+| `get_core_uptime` | Uptime in milliseconds |
 
-### Safety Controls (2 tools)
+### Safety & Motor Protection (5 tools)
 | Tool | Description |
 |------|-------------|
 | `set_speed_limit` | Set max speed (0-100%) |
 | `set_command_timeout` | Set auto-stop timeout |
+| `get_motor_fault_state` | Check for motor faults |
+| `enable_motor_stall_notify` | Enable/disable stall detection |
+| `enable_motor_fault_notify` | Enable/disable fault detection |
 
-### IR Communication (3 tools)
+### IR Communication (7 tools)
 | Tool | Description |
 |------|-------------|
 | `send_ir_message` | Send IR code (0-7) |
-| `start_ir_broadcasting` | Start robot-to-robot IR |
+| `start_ir_broadcasting` | Start robot-to-robot IR broadcasting |
 | `stop_ir_broadcasting` | Stop IR broadcasting |
+| `start_ir_following` | Follow an IR-broadcasting robot |
+| `stop_ir_following` | Stop following |
+| `start_ir_evading` | Evade an IR-broadcasting robot |
+| `stop_ir_evading` | Stop evading |
 
 ## Architecture
 
@@ -407,6 +432,17 @@ Contributions welcome! Please:
 5. Submit a pull request
 
 ## Changelog
+
+### v0.2.2 (2026-01-29)
+- **22 new MCP tools** for full SDK sensor coverage:
+  - Temperature & thermal protection monitoring
+  - System info (firmware, MAC, SKU, uptime, board revision)
+  - Extended battery info (voltage, state, thresholds)
+  - Motion sensors (encoders, magnetometer with compass heading)
+  - Motor protection (fault state, stall/fault notifications)
+  - IR follow/evade behaviors
+- **Fixed 4 sensor commands** with incorrect protocol parameters
+- **Magnetometer heading** - returns `heading` (degrees) and `cardinal` direction
 
 ### v0.2.1 (2026-01-15)
 - **Direct serial protocol** for low-latency control (bypasses SDK)
