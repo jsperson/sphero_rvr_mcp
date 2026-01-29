@@ -14,6 +14,8 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 
 ### Low-Latency Architecture (v0.2.1+)
 - **Direct Serial Protocol**: Bypasses SDK for sub-millisecond command latency
+- **No Sphero SDK Required**: Works on Python 3.10 - 3.13+ (SDK was limited to 3.10)
+- **Minimal Dependencies**: Just 4 packages (fastmcp, pydantic, structlog, pyserial)
 - **Distance Control**: `drive_forward(0.5)` moves exactly 0.5 meters
 - **Angle Control**: `pivot(90)` rotates exactly 90 degrees
 - **Command Queue**: Priority-based async queue eliminates race conditions
@@ -32,7 +34,7 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 ## Requirements
 
 - Raspberry Pi 3 or newer (connected to Sphero RVR via serial)
-- Python 3.10+
+- Python 3.10+ (tested on 3.10, 3.12, 3.13 - no SDK limitations)
 - Sphero RVR with serial connection to Pi
 
 ## Installation
