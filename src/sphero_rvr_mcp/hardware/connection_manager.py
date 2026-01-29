@@ -75,10 +75,10 @@ class ConnectionManager:
             logger.warning("existing_connection_detected", action="cleaning_up")
             await self._cleanup()
 
-        # Validate state transition
+        # Validate state transition - must be DISCONNECTED to connect
         current_state = await self._state_manager.system_state.get_connection_state()
-        if current_state not in (ConnectionState.DISCONNECTED, ConnectionState.ERROR):
-            # Force disconnect if in wrong state
+        if current_state != ConnectionState.DISCONNECTED:
+            # Force disconnect if in wrong state (including ERROR)
             logger.warning("invalid_state_for_connect", current_state=current_state.value, action="forcing_disconnect")
             await self.disconnect()
 

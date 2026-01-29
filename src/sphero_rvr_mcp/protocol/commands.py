@@ -13,6 +13,22 @@ CID_DRIVE_TO_POSITION_SI = 0x38
 # IO command IDs
 CID_SET_ALL_LEDS = 0x1A
 
+# LED group mappings (bit positions in the 30-bit LED bitmap)
+# Each LED group has 3 consecutive bits for R, G, B channels
+# Bit positions: group_index * 3 + channel (0=R, 1=G, 2=B)
+LED_GROUPS = {
+    "headlight_right": 0,      # Bits 0-2
+    "headlight_left": 1,       # Bits 3-5
+    "battery_door_front": 2,   # Bits 6-8
+    "battery_door_rear": 3,    # Bits 9-11
+    "power_button_front": 4,   # Bits 12-14
+    "power_button_rear": 5,    # Bits 15-17
+    "brakelight_left": 6,      # Bits 18-20
+    "brakelight_right": 7,     # Bits 21-23
+    "status_indication_left": 8,   # Bits 24-26
+    "status_indication_right": 9,  # Bits 27-29
+}
+
 # Power command IDs
 CID_WAKE = 0x0D
 CID_GET_BATTERY_PERCENTAGE = 0x10
@@ -20,6 +36,9 @@ CID_GET_BATTERY_PERCENTAGE = 0x10
 # Sensor command IDs
 CID_GET_RGBC_SENSOR = 0x23
 CID_GET_AMBIENT_LIGHT = 0x30
+CID_ENABLE_COLOR_DETECTION_NOTIFY = 0x35
+CID_GET_CURRENT_DETECTED_COLOR = 0x37
+CID_ENABLE_COLOR_DETECTION = 0x38
 
 # IR command IDs
 DID_IR = 0x1C
@@ -63,6 +82,44 @@ def set_all_leds(r: int, g: int, b: int) -> bytes:
     # 30 brightness values: RGB repeated for each of 10 LED groups
     brightness = bytes([r & 0xFF, g & 0xFF, b & 0xFF] * 10)
     data = struct.pack(">I", led_bitmap) + brightness
+    return build_packet(DID_IO, CID_SET_ALL_LEDS, TARGET_BT, data)
+
+
+def set_led_group(group_name: str, r: int, g: int, b: int) -> bytes:
+    """Set a specific LED group to RGB color.
+
+    Args:
+        group_name: One of: headlight_left, headlight_right, battery_door_front,
+                    battery_door_rear, power_button_front, power_button_rear,
+                    brakelight_left, brakelight_right, status_indication_left,
+                    status_indication_right
+        r, g, b: Color values 0-255
+
+    Returns:
+        Command packet bytes
+
+    Raises:
+        ValueError: If group_name is not recognized
+    """
+    if group_name not in LED_GROUPS:
+        raise ValueError(f"Unknown LED group: {group_name}. Valid groups: {list(LED_GROUPS.keys())}")
+
+    group_index = LED_GROUPS[group_name]
+
+    # Create bitmap with only this group's RGB channels enabled
+    # Each group has 3 bits (R, G, B) starting at group_index * 3
+    base_bit = group_index * 3
+    led_bitmap = (1 << base_bit) | (1 << (base_bit + 1)) | (1 << (base_bit + 2))
+
+    # Create brightness array with values only for this group
+    # The brightness array must have 30 bytes (10 groups * 3 channels)
+    # but only the enabled channels are used
+    brightness = bytearray(30)
+    brightness[base_bit] = r & 0xFF
+    brightness[base_bit + 1] = g & 0xFF
+    brightness[base_bit + 2] = b & 0xFF
+
+    data = struct.pack(">I", led_bitmap) + bytes(brightness)
     return build_packet(DID_IO, CID_SET_ALL_LEDS, TARGET_BT, data)
 
 
@@ -143,3 +200,26 @@ def get_rgbc_sensor_values() -> bytes:
 def get_ambient_light() -> bytes:
     """Query ambient light sensor value."""
     return build_packet(DID_SENSOR, CID_GET_AMBIENT_LIGHT, TARGET_BT, b'', request_response=True)
+
+
+def enable_color_detection(enabled: bool = True) -> bytes:
+    """Enable or disable color detection on bottom sensor (controls belly LED)."""
+    data = struct.pack(">B", 1 if enabled else 0)
+    return build_packet(DID_SENSOR, CID_ENABLE_COLOR_DETECTION, TARGET_BT, data, request_response=True)
+
+
+def enable_color_detection_notify(enabled: bool = True, interval_ms: int = 250, confidence: int = 0) -> bytes:
+    """Enable color detection with continuous notifications (turns on belly LED).
+
+    Args:
+        enabled: Turn on/off
+        interval_ms: Notification interval in milliseconds
+        confidence: Minimum confidence threshold (0-255)
+    """
+    data = struct.pack(">BHB", 1 if enabled else 0, interval_ms, confidence)
+    return build_packet(DID_SENSOR, CID_ENABLE_COLOR_DETECTION_NOTIFY, TARGET_BT, data)
+
+
+def get_current_detected_color() -> bytes:
+    """Get current detected color reading (may trigger LED illumination)."""
+    return build_packet(DID_SENSOR, CID_GET_CURRENT_DETECTED_COLOR, TARGET_BT, b'', request_response=True)

@@ -202,16 +202,29 @@ def register_tools():
     @mcp.tool()
     async def disconnect() -> dict:
         """Disconnect from RVR."""
-        if _connection_service is None:
-            return {"success": False, "error": "Not connected"}
-        return await _connection_service.disconnect()
+        try:
+            await connection_manager.disconnect()
+            return {"success": True, "message": "Disconnected"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     @mcp.tool()
     async def get_connection_status() -> dict:
         """Get connection status."""
-        if _connection_service is None:
-            return {"success": False, "error": "Not connected"}
-        return await _connection_service.get_connection_status()
+        is_connected = (
+            connection_manager.direct_serial is not None
+            and connection_manager.direct_serial.is_connected
+        )
+        system_snapshot = await state_manager.system_state.snapshot()
+        connection_snapshot = await state_manager.connection_info.snapshot()
+        return {
+            "success": True,
+            "connected": is_connected,
+            "connection_state": system_snapshot.get("connection_state"),
+            "serial_port": connection_snapshot.get("serial_port"),
+            "baud_rate": connection_snapshot.get("baud_rate"),
+            "uptime_seconds": connection_snapshot.get("uptime_seconds"),
+        }
 
     # Movement tools
     @mcp.tool()
@@ -228,14 +241,28 @@ def register_tools():
     @mcp.tool()
     async def drive_tank(left_velocity: float, right_velocity: float) -> dict:
         """Drive with tank controls."""
-        await ensure_services_initialized()
-        return await _movement_service.drive_tank(left_velocity, right_velocity)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # Check emergency stop
+        if await state_manager.safety_state.is_emergency_stopped():
+            return {"success": False, "error": "Emergency stop is active"}
+
+        ok = connection_manager.direct_serial.drive_tank(left_velocity, right_velocity)
+        return {"success": ok}
 
     @mcp.tool()
     async def drive_rc(linear_velocity: float, yaw_velocity: float) -> dict:
         """Drive with RC controls."""
-        await ensure_services_initialized()
-        return await _movement_service.drive_rc(linear_velocity, yaw_velocity)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # Check emergency stop
+        if await state_manager.safety_state.is_emergency_stopped():
+            return {"success": False, "error": "Emergency stop is active"}
+
+        ok = connection_manager.direct_serial.drive_rc(linear_velocity, yaw_velocity)
+        return {"success": ok}
 
     @mcp.tool()
     async def stop() -> dict:
@@ -251,14 +278,20 @@ def register_tools():
     @mcp.tool()
     async def emergency_stop() -> dict:
         """Emergency stop."""
-        await ensure_services_initialized()
-        return await _movement_service.emergency_stop()
+        # Set emergency stop flag
+        await state_manager.safety_state.set_emergency_stop(True)
+
+        # Stop the robot if connected
+        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
+            connection_manager.direct_serial.stop()
+
+        return {"success": True, "message": "Emergency stop activated"}
 
     @mcp.tool()
     async def clear_emergency_stop() -> dict:
         """Clear emergency stop."""
-        await ensure_services_initialized()
-        return await _movement_service.clear_emergency_stop()
+        await state_manager.safety_state.set_emergency_stop(False)
+        return {"success": True, "message": "Emergency stop cleared"}
 
     @mcp.tool()
     async def reset_yaw() -> dict:
@@ -395,8 +428,26 @@ def register_tools():
     @mcp.tool()
     async def set_led(led_group: str, red: int, green: int, blue: int) -> dict:
         """Set specific LED group."""
-        await ensure_services_initialized()
-        return await _led_service.set_led(led_group, red, green, blue)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # Valid LED group names
+        valid_groups = [
+            "headlight_left", "headlight_right",
+            "battery_door_front", "battery_door_rear",
+            "power_button_front", "power_button_rear",
+            "brakelight_left", "brakelight_right",
+            "status_indication_left", "status_indication_right",
+        ]
+
+        if led_group not in valid_groups:
+            return {
+                "success": False,
+                "error": f"Invalid LED group: {led_group}. Valid groups: {valid_groups}",
+            }
+
+        ok = connection_manager.direct_serial.set_led_group(led_group, red, green, blue)
+        return {"success": ok, "led_group": led_group}
 
     @mcp.tool()
     async def turn_leds_off() -> dict:
@@ -413,63 +464,172 @@ def register_tools():
     @mcp.tool()
     async def start_sensor_streaming(sensors: list, interval_ms: int = 250) -> dict:
         """Start sensor streaming."""
-        await ensure_services_initialized()
-        return await _sensor_service.start_sensor_streaming(sensors, interval_ms)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # Valid sensors for polling-based streaming
+        valid_sensors = ["battery", "ambient_light", "color"]
+
+        # Validate requested sensors
+        invalid = [s for s in sensors if s not in valid_sensors]
+        if invalid:
+            return {
+                "success": False,
+                "error": f"Invalid sensors: {invalid}. Valid: {valid_sensors}",
+            }
+
+        # Update streaming state
+        await state_manager.sensor_state.set_streaming(
+            active=True,
+            sensors=sensors,
+            interval_ms=interval_ms,
+        )
+
+        return {
+            "success": True,
+            "message": "Sensor streaming configured (polling mode)",
+            "sensors": sensors,
+            "interval_ms": interval_ms,
+        }
 
     @mcp.tool()
     async def stop_sensor_streaming() -> dict:
         """Stop sensor streaming."""
-        await ensure_services_initialized()
-        return await _sensor_service.stop_sensor_streaming()
+        await state_manager.sensor_state.set_streaming(active=False, sensors=[])
+        await state_manager.sensor_state.clear_cache()
+        return {"success": True, "message": "Sensor streaming stopped"}
 
     @mcp.tool()
     async def get_sensor_data(sensors: list = None) -> dict:
         """Get sensor data."""
-        await ensure_services_initialized()
-        return await _sensor_service.get_sensor_data(sensors)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # If no sensors specified, use streaming sensors or default
+        if sensors is None:
+            sensor_snapshot = await state_manager.sensor_state.snapshot()
+            sensors = sensor_snapshot.get("streaming_sensors", [])
+            if not sensors:
+                sensors = ["battery", "ambient_light", "color"]
+
+        result = {"success": True, "sensors": {}}
+
+        # Poll each requested sensor
+        for sensor in sensors:
+            if sensor == "battery":
+                value = connection_manager.direct_serial.get_battery_percentage()
+                if value is not None:
+                    result["sensors"]["battery"] = {"percentage": value}
+
+            elif sensor == "ambient_light":
+                value = connection_manager.direct_serial.get_ambient_light()
+                if value is not None:
+                    result["sensors"]["ambient_light"] = {"value": value}
+
+            elif sensor == "color":
+                value = connection_manager.direct_serial.get_rgbc_sensor_values()
+                if value is not None:
+                    result["sensors"]["color"] = value
+
+        return result
 
     @mcp.tool()
     async def get_ambient_light() -> dict:
         """Get ambient light."""
-        await ensure_services_initialized()
-        return await _sensor_service.get_ambient_light()
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        light_value = connection_manager.direct_serial.get_ambient_light()
+        if light_value is not None:
+            return {"success": True, "ambient_light": light_value}
+        return {"success": False, "error": "Failed to read ambient light sensor"}
 
     @mcp.tool()
     async def enable_color_detection(enabled: bool = True) -> dict:
         """Enable color detection."""
-        await ensure_services_initialized()
-        return await _sensor_service.enable_color_detection(enabled)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.enable_color_detection(enabled)
+        return {"success": ok, "enabled": enabled}
 
     @mcp.tool()
     async def get_color_detection(stabilization_ms: int = 50) -> dict:
         """Get color detection."""
-        await ensure_services_initialized()
-        return await _sensor_service.get_color_detection(stabilization_ms)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # Turn on belly LED
+        if not connection_manager.direct_serial.enable_color_detection(True):
+            return {"success": False, "error": "Failed to enable color detection LED"}
+
+        # Stabilization delay for LED to illuminate surface
+        if stabilization_ms > 0:
+            await asyncio.sleep(stabilization_ms / 1000.0)
+
+        result = None
+
+        # Try get_current_detected_color first (returns classified color)
+        color = connection_manager.direct_serial.get_current_detected_color()
+        if color is not None:
+            result = {
+                "success": True,
+                "red": color["red"],
+                "green": color["green"],
+                "blue": color["blue"],
+                "confidence": color["confidence"],
+                "color_classification_id": color["color_classification_id"],
+            }
+        else:
+            # Fallback to raw RGBC sensor values
+            rgbc = connection_manager.direct_serial.get_rgbc_sensor_values()
+            if rgbc is not None:
+                result = {
+                    "success": True,
+                    "red": rgbc["red"],
+                    "green": rgbc["green"],
+                    "blue": rgbc["blue"],
+                    "clear": rgbc["clear"],
+                }
+
+        # Turn off belly LED
+        connection_manager.direct_serial.enable_color_detection(False)
+
+        if result is not None:
+            return result
+        return {"success": False, "error": "Failed to read color sensor"}
 
     @mcp.tool()
     async def get_battery_status() -> dict:
         """Get battery status."""
-        await ensure_services_initialized()
-        return await _sensor_service.get_battery_status()
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        percentage = connection_manager.direct_serial.get_battery_percentage()
+        if percentage is not None:
+            return {"success": True, "battery_percentage": percentage}
+        return {"success": False, "error": "Failed to read battery status"}
 
     # Safety tools
     @mcp.tool()
     async def get_safety_status() -> dict:
         """Get safety status."""
-        await ensure_services_initialized()
-        return await _safety_service.get_safety_status()
+        safety_snapshot = await state_manager.safety_state.snapshot()
+        return {"success": True, **safety_snapshot}
 
     @mcp.tool()
     async def set_speed_limit(max_speed_percent: float) -> dict:
         """Set speed limit."""
-        await ensure_services_initialized()
-        return await _safety_service.set_speed_limit(max_speed_percent)
+        await state_manager.safety_state.set_speed_limit(max_speed_percent)
+        current_limit = await state_manager.safety_state.get_speed_limit()
+        return {"success": True, "speed_limit_percent": current_limit}
 
     @mcp.tool()
     async def set_command_timeout(timeout_seconds: float) -> dict:
         """Set command timeout."""
-        await ensure_services_initialized()
-        return await _safety_service.set_command_timeout(timeout_seconds)
+        await state_manager.safety_state.set_command_timeout(timeout_seconds)
+        current_timeout = await state_manager.safety_state.get_command_timeout()
+        return {"success": True, "command_timeout_seconds": current_timeout}
 
     # IR tools
     @mcp.tool()

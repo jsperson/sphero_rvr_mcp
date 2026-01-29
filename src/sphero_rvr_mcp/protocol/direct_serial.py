@@ -130,6 +130,25 @@ class DirectSerial:
         """Set all LEDs to RGB color."""
         return self._send(commands.set_all_leds(r, g, b))
 
+    def set_led_group(self, group_name: str, r: int, g: int, b: int) -> bool:
+        """Set a specific LED group to RGB color.
+
+        Args:
+            group_name: One of: headlight_left, headlight_right, battery_door_front,
+                        battery_door_rear, power_button_front, power_button_rear,
+                        brakelight_left, brakelight_right, status_indication_left,
+                        status_indication_right
+            r, g, b: Color values 0-255
+
+        Returns:
+            True if command sent successfully
+        """
+        try:
+            packet = commands.set_led_group(group_name, r, g, b)
+            return self._send(packet)
+        except ValueError:
+            return False
+
     def reset_locator(self) -> bool:
         """Reset locator X,Y position to origin."""
         return self._send(commands.reset_locator())
@@ -145,6 +164,70 @@ class DirectSerial:
     def stop_ir_broadcasting(self) -> bool:
         """Stop IR broadcasting."""
         return self._send(commands.stop_ir_broadcast())
+
+    def enable_color_detection(self, enabled: bool = True, timeout: float = 1.0) -> bool:
+        """Enable or disable color detection on bottom sensor (controls belly LED).
+
+        Args:
+            enabled: True to turn on belly LED, False to turn off
+            timeout: Response timeout in seconds
+
+        Returns:
+            True if command acknowledged, False on timeout/error
+        """
+        packet = commands.enable_color_detection(enabled)
+        response = self._send_and_wait(packet, timeout)
+        return response is not None
+
+    def drive_tank(self, left_velocity: float, right_velocity: float) -> bool:
+        """Drive with tank controls (independent left/right velocities).
+
+        Args:
+            left_velocity: Left track velocity (-1.0 to 1.0)
+            right_velocity: Right track velocity (-1.0 to 1.0)
+
+        Returns:
+            True if command sent successfully
+        """
+        # Convert float velocities (-1.0 to 1.0) to raw motor values (0-255)
+        left_speed = int(abs(left_velocity) * 255)
+        right_speed = int(abs(right_velocity) * 255)
+
+        # Clamp to valid range
+        left_speed = max(0, min(255, left_speed))
+        right_speed = max(0, min(255, right_speed))
+
+        # Determine motor modes: 0=off, 1=forward, 2=reverse
+        left_mode = 0 if left_speed == 0 else (2 if left_velocity < 0 else 1)
+        right_mode = 0 if right_speed == 0 else (2 if right_velocity < 0 else 1)
+
+        return self._send(commands.raw_motors(left_mode, left_speed, right_mode, right_speed))
+
+    def drive_rc(self, linear_velocity: float, yaw_velocity: float) -> bool:
+        """Drive with RC-style controls.
+
+        Args:
+            linear_velocity: Forward/backward velocity (-1.0 to 1.0)
+            yaw_velocity: Turn rate (-1.0 to 1.0, positive = turn right)
+
+        Returns:
+            True if command sent successfully
+        """
+        # Convert to tank-style controls
+        # linear_velocity controls forward/backward
+        # yaw_velocity controls differential between tracks
+
+        # Mix: left = linear + yaw, right = linear - yaw
+        left = linear_velocity + yaw_velocity
+        right = linear_velocity - yaw_velocity
+
+        # Normalize if either exceeds 1.0
+        max_val = max(abs(left), abs(right))
+        if max_val > 1.0:
+            left /= max_val
+            right /= max_val
+
+        return self.drive_tank(left, right)
 
     # Query commands (with responses)
 
@@ -177,6 +260,26 @@ class DirectSerial:
                 'green': green,
                 'blue': blue,
                 'clear': clear
+            }
+        return None
+
+    def get_current_detected_color(self, timeout: float = 1.0) -> Optional[dict]:
+        """Get current detected color (triggers LED illumination).
+
+        Returns:
+            Dict with color info, or None on error
+        """
+        packet = commands.get_current_detected_color()
+        response = self._send_and_wait(packet, timeout)
+        if response and len(response.data) >= 5:
+            # Response: red(u8), green(u8), blue(u8), confidence(u8), color_id(u8)
+            red, green, blue, confidence, color_id = response.data[:5]
+            return {
+                'red': red,
+                'green': green,
+                'blue': blue,
+                'confidence': confidence,
+                'color_classification_id': color_id
             }
         return None
 
