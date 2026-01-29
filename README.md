@@ -433,7 +433,7 @@ Contributions welcome! Please:
 
 ## Changelog
 
-### v0.2.2 (2026-01-29)
+### v0.2.3 (2026-01-29)
 - **22 new MCP tools** for full SDK sensor coverage:
   - Temperature & thermal protection monitoring
   - System info (firmware, MAC, SKU, uptime, board revision)
