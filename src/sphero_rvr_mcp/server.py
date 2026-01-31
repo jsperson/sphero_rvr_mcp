@@ -160,6 +160,50 @@ async def ensure_services_initialized():
     logger.info("services_initialized")
 
 
+def _pivot_blocking(direct_serial, degrees: float, speed: int) -> dict:
+    """Blocking pivot implementation for use in executor.
+
+    Args:
+        direct_serial: DirectSerial instance
+        degrees: Degrees to turn
+        speed: Rotation speed 0-255
+
+    Returns:
+        Result dict
+    """
+    from .protocol import commands
+    import time
+
+    # Calculate target heading (0-359)
+    target_heading = int(degrees) % 360
+
+    # Step 1: Reset yaw so current direction = heading 0
+    direct_serial.reset_yaw()
+    time.sleep(0.15)
+
+    # Step 2: Rotate to target heading (speed 0 = rotate only)
+    direct_serial.drive_with_heading(speed, target_heading)
+
+    # Wait for rotation (firmware handles it, use conservative estimate)
+    rotation_time = abs(degrees) / 90.0 * 2.0  # Conservative: ~2s per 90 degrees
+    rotation_time = max(0.5, min(rotation_time, 15.0))
+    time.sleep(rotation_time)
+
+    # Step 3: Reset yaw again so new direction = heading 0
+    direct_serial.reset_yaw()
+    time.sleep(0.1)
+
+    # Step 4: Stop with raw motors off (avoids heading correction)
+    direct_serial._send(commands.raw_motors(0, 0, 0, 0))
+
+    return {
+        "success": True,
+        "degrees": degrees,
+        "target_heading": target_heading,
+        "rotation_time": rotation_time,
+    }
+
+
 # Register all tools
 def register_tools():
     """Register all MCP tools.
@@ -374,44 +418,29 @@ def register_tools():
         Returns:
             Result with degrees turned.
         """
-        import asyncio
-
         # Use direct serial for reliable pivot
         if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
             return {"success": False, "error": "Not connected (direct serial)"}
 
-        # Calculate target heading (0-359)
-        # Positive degrees = right = positive heading
-        # Negative degrees = left = needs to wrap (e.g., -90 = 270)
-        target_heading = int(degrees) % 360
+        # Check emergency stop
+        if await state_manager.safety_state.is_emergency_stopped():
+            return {"success": False, "error": "Emergency stop is active"}
 
-        # Step 1: Reset yaw so current direction = heading 0
-        connection_manager.direct_serial.reset_yaw()
-        await asyncio.sleep(0.15)
+        # Run the blocking pivot operation in an executor
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(
+                None,
+                _pivot_blocking,
+                connection_manager.direct_serial,
+                degrees,
+                speed
+            )
+            return result
+        except Exception as e:
+            logger.error("pivot_error", error=str(e))
+            return {"success": False, "error": str(e)}
 
-        # Step 2: Rotate to target heading (speed 0 = rotate only)
-        connection_manager.direct_serial.drive_with_heading(speed, target_heading)
-
-        # Wait for rotation (firmware handles it, use conservative estimate)
-        # The RVR's firmware uses its internal magnetometer for closed-loop control
-        rotation_time = abs(degrees) / 90.0 * 2.0  # Conservative: ~2s per 90 degrees
-        rotation_time = max(0.5, min(rotation_time, 15.0))
-        await asyncio.sleep(rotation_time)
-
-        # Step 3: Reset yaw again so new direction = heading 0
-        connection_manager.direct_serial.reset_yaw()
-        await asyncio.sleep(0.1)
-
-        # Step 4: Stop with raw motors off (avoids heading correction)
-        from .protocol import commands
-        connection_manager.direct_serial._send(commands.raw_motors(0, 0, 0, 0))
-
-        return {
-            "success": True,
-            "degrees": degrees,
-            "target_heading": target_heading,
-            "rotation_time": rotation_time,
-        }
 
     @mcp.tool()
     async def drive_forward(
@@ -432,8 +461,23 @@ def register_tools():
         if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
             return {"success": False, "error": "Not connected"}
 
-        ok = connection_manager.direct_serial.drive_forward_meters(distance, speed)
-        return {"success": ok, "distance": distance}
+        # Check emergency stop
+        if await state_manager.safety_state.is_emergency_stopped():
+            return {"success": False, "error": "Emergency stop is active"}
+
+        # Run blocking movement call in executor to not block the event loop
+        loop = asyncio.get_event_loop()
+        try:
+            ok = await loop.run_in_executor(
+                None,
+                connection_manager.direct_serial.drive_forward_meters,
+                distance,
+                speed
+            )
+            return {"success": ok, "distance": distance}
+        except Exception as e:
+            logger.error("drive_forward_error", error=str(e))
+            return {"success": False, "error": str(e)}
 
     @mcp.tool()
     async def drive_backward(
@@ -454,8 +498,23 @@ def register_tools():
         if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
             return {"success": False, "error": "Not connected"}
 
-        ok = connection_manager.direct_serial.drive_backward_meters(distance, speed)
-        return {"success": ok, "distance": distance}
+        # Check emergency stop
+        if await state_manager.safety_state.is_emergency_stopped():
+            return {"success": False, "error": "Emergency stop is active"}
+
+        # Run blocking movement call in executor to not block the event loop
+        loop = asyncio.get_event_loop()
+        try:
+            ok = await loop.run_in_executor(
+                None,
+                connection_manager.direct_serial.drive_backward_meters,
+                distance,
+                speed
+            )
+            return {"success": ok, "distance": distance}
+        except Exception as e:
+            logger.error("drive_backward_error", error=str(e))
+            return {"success": False, "error": str(e)}
 
     # LED tools
     @mcp.tool()

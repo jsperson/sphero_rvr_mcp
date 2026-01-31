@@ -94,6 +94,62 @@ def build_packet(did: int, cid: int, target: int, data: bytes = b"",
     return bytes([SOP]) + escape_buffer(content_with_chk) + bytes([EOP])
 
 
+def get_packet_header(packet: bytes) -> tuple:
+    """Extract (did, cid, seq) from a built packet.
+
+    This is useful for matching responses to requests when using
+    the dispatcher pattern.
+
+    Args:
+        packet: Complete packet bytes (with SOP/EOP)
+
+    Returns:
+        Tuple of (did, cid, seq)
+
+    Raises:
+        ValueError: If packet is malformed
+    """
+    if len(packet) < 2:
+        raise ValueError("Packet too short")
+
+    if packet[0] != SOP:
+        raise ValueError(f"Invalid SOP: {packet[0]:#x}")
+
+    # Find EOP
+    try:
+        eop_idx = packet.index(EOP, 1)
+    except ValueError:
+        raise ValueError("No EOP found")
+
+    # Unescape the content
+    escaped_content = packet[1:eop_idx]
+    content = unescape_buffer(escaped_content)
+
+    # Content format: flags, target, source, did, cid, seq, [data...], checksum
+    # Or simplified: flags, did, cid, seq, [data...], checksum (no target/source)
+
+    if len(content) < 5:
+        raise ValueError(f"Content too short: {len(content)} bytes")
+
+    flags = content[0]
+
+    # Check if packet has target/source fields
+    if flags & FLAG_HAS_TARGET:
+        # Full format: flags, target, source, did, cid, seq
+        if len(content) < 7:
+            raise ValueError(f"Content too short for full packet: {len(content)} bytes")
+        did = content[3]
+        cid = content[4]
+        seq = content[5]
+    else:
+        # Simplified format: flags, did, cid, seq
+        did = content[1]
+        cid = content[2]
+        seq = content[3]
+
+    return (did, cid, seq)
+
+
 class ParsedResponse:
     """Parsed RVR response packet."""
     def __init__(self, flags: int, did: int, cid: int, seq: int, data: bytes):
@@ -149,18 +205,43 @@ def parse_response(buffer: bytes) -> ParsedResponse:
     if calculated_checksum != 0xFF:
         raise ValueError(f"Bad checksum: {calculated_checksum:02x} (expected 0xFF)")
 
-    # Parse header (minimum 6 bytes: flags, target, source, did, cid, seq)
-    if len(packet) < 7:  # 6 header + 1 checksum
+    # Minimum packet: flags + did + cid + seq + checksum = 5 bytes
+    if len(packet) < 5:
         raise ValueError(f"Packet too short: {len(packet)} bytes")
 
-    flags = packet[0]
-    target = packet[1]
-    source = packet[2]
-    did = packet[3]
-    cid = packet[4]
-    seq = packet[5]
+    # Parse header dynamically based on flags (like SDK does)
+    idx = 0
+    flags = packet[idx]
+    idx += 1
+
+    # Skip target if present
+    if flags & FLAG_HAS_TARGET:
+        if idx >= len(packet) - 1:
+            raise ValueError("Packet too short for target field")
+        idx += 1  # target byte
+
+    # Skip source if present
+    if flags & FLAG_HAS_SOURCE:
+        if idx >= len(packet) - 1:
+            raise ValueError("Packet too short for source field")
+        idx += 1  # source byte
+
+    # Now read did, cid, seq
+    if idx + 3 > len(packet) - 1:
+        raise ValueError(f"Packet too short for did/cid/seq: need {idx+3}, have {len(packet)-1}")
+
+    did = packet[idx]
+    cid = packet[idx + 1]
+    seq = packet[idx + 2]
+    idx += 3
+
+    # If response, skip error byte
+    if flags & FLAG_IS_RESPONSE:
+        if idx >= len(packet) - 1:
+            raise ValueError("Packet too short for error field")
+        idx += 1  # error byte
 
     # Data is everything after header, before checksum
-    data = packet[6:-1]
+    data = packet[idx:-1]
 
     return ParsedResponse(flags, did, cid, seq, data)

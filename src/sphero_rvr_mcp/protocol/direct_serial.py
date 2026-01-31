@@ -1,15 +1,30 @@
 """Direct serial connection to RVR - bypasses SDK async overhead."""
 
+import logging
 import serial
 import threading
 import time
 from typing import Optional
 from . import commands
-from .packet import parse_response, ParsedResponse
+from .packet import parse_response, ParsedResponse, get_packet_header
+from .dispatcher import SerialDispatcher
+from .movement import MovementTracker
+
+logger = logging.getLogger(__name__)
 
 
 class DirectSerial:
-    """Synchronous direct serial connection to RVR for low-latency commands."""
+    """Synchronous direct serial connection to RVR for low-latency commands.
+
+    This class provides two modes of operation:
+    1. Legacy mode: Simple send/receive with inline blocking reads
+    2. Dispatcher mode: Background reader with sequence matching (SDK-style)
+
+    Dispatcher mode is automatically enabled on connect() and provides:
+    - Proper request-response matching by sequence number
+    - Movement completion detection via notifications
+    - Better handling of concurrent commands
+    """
 
     def __init__(self, port: str = "/dev/ttyS0", baud: int = 115200):
         self._port = port
@@ -17,27 +32,97 @@ class DirectSerial:
         self._serial: Optional[serial.Serial] = None
         self._lock = threading.Lock()
 
+        # Dispatcher for SDK-style communication
+        self._dispatcher: Optional[SerialDispatcher] = None
+        self._movement_tracker: Optional[MovementTracker] = None
+
+        # Feature flags
+        self._use_dispatcher = False  # Disabled - causing stability issues
+        self._use_movement_notifications = False  # Disabled with dispatcher
+
     def connect(self) -> bool:
-        """Open serial connection."""
+        """Open serial connection and start dispatcher."""
         with self._lock:
             if self._serial and self._serial.is_open:
                 return True
             try:
                 self._serial = serial.Serial(self._port, self._baud, timeout=0.1)
+
+                # Start dispatcher if enabled
+                if self._use_dispatcher:
+                    self._start_dispatcher()
+
                 return True
-            except Exception:
+            except Exception as e:
+                logger.error(f"Failed to connect: {e}")
                 return False
 
     def disconnect(self):
-        """Close serial connection."""
+        """Close serial connection and stop dispatcher."""
         with self._lock:
+            # Stop dispatcher first
+            if self._dispatcher:
+                self._stop_dispatcher()
+
             if self._serial:
                 self._serial.close()
                 self._serial = None
 
+    def _start_dispatcher(self) -> None:
+        """Start the serial dispatcher and movement tracker.
+
+        Must be called with lock held.
+        """
+        if not self._serial:
+            return
+
+        try:
+            self._dispatcher = SerialDispatcher(self._serial)
+            self._dispatcher.start()
+
+            # Create and register movement tracker
+            if self._use_movement_notifications:
+                self._movement_tracker = MovementTracker()
+                self._movement_tracker.register_with_dispatcher(self._dispatcher)
+
+            logger.debug("Dispatcher started successfully")
+        except Exception as e:
+            logger.error(f"Failed to start dispatcher: {e}")
+            self._dispatcher = None
+            self._movement_tracker = None
+
+    def _stop_dispatcher(self) -> None:
+        """Stop the serial dispatcher and movement tracker.
+
+        Must be called with lock held.
+        """
+        if self._movement_tracker and self._dispatcher:
+            try:
+                self._movement_tracker.unregister_from_dispatcher(self._dispatcher)
+            except Exception as e:
+                logger.warning(f"Error unregistering movement tracker: {e}")
+            self._movement_tracker = None
+
+        if self._dispatcher:
+            try:
+                self._dispatcher.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping dispatcher: {e}")
+            self._dispatcher = None
+
     @property
     def is_connected(self) -> bool:
         return self._serial is not None and self._serial.is_open
+
+    @property
+    def dispatcher(self) -> Optional[SerialDispatcher]:
+        """Get the serial dispatcher (if active)."""
+        return self._dispatcher
+
+    @property
+    def movement_tracker(self) -> Optional[MovementTracker]:
+        """Get the movement tracker (if active)."""
+        return self._movement_tracker
 
     def _send(self, packet: bytes) -> bool:
         """Send packet (fire-and-forget)."""
@@ -48,11 +133,59 @@ class DirectSerial:
                 self._serial.write(packet)
                 self._serial.flush()
                 return True
-            except Exception:
+            except Exception as e:
+                logger.error(f"Send failed: {e}")
                 return False
+
+    def _drain_buffer(self) -> int:
+        """Drain any pending data from serial buffer.
+
+        Returns:
+            Number of bytes drained
+        """
+        if not self._serial or not self._serial.is_open:
+            return 0
+        total = 0
+        try:
+            while self._serial.in_waiting > 0:
+                data = self._serial.read(self._serial.in_waiting)
+                total += len(data)
+                logger.debug(f"Drained {len(data)} bytes from buffer")
+        except Exception as e:
+            logger.warning(f"Error draining buffer: {e}")
+        return total
 
     def _send_and_wait(self, packet: bytes, timeout: float = 1.0) -> Optional[ParsedResponse]:
         """Send packet and wait for response.
+
+        Uses the dispatcher if available for proper sequence matching,
+        otherwise falls back to inline blocking read.
+
+        Args:
+            packet: Command packet to send
+            timeout: Maximum time to wait for response (seconds)
+
+        Returns:
+            ParsedResponse if received, None on timeout or error
+        """
+        # Try dispatcher path first (SDK-style)
+        if self._dispatcher:
+            try:
+                did, cid, seq = get_packet_header(packet)
+                response = self._dispatcher.send_and_wait(packet, did, cid, seq, timeout)
+                if response is not None:
+                    return response
+                # Dispatcher returned None - might not be running, fall through
+            except Exception as e:
+                logger.debug(f"Dispatcher send_and_wait failed: {e}, using fallback")
+
+        # Fallback to legacy inline blocking read
+        return self._send_and_wait_legacy(packet, timeout)
+
+    def _send_and_wait_legacy(self, packet: bytes, timeout: float = 1.0) -> Optional[ParsedResponse]:
+        """Legacy send and wait using inline blocking read.
+
+        This is the fallback when dispatcher is not available.
 
         Args:
             packet: Command packet to send
@@ -95,7 +228,8 @@ class DirectSerial:
                     time.sleep(0.001)
 
                 return None  # Timeout
-            except Exception:
+            except Exception as e:
+                logger.error(f"Legacy send_and_wait failed: {e}")
                 return None
 
     # High-level commands
@@ -110,11 +244,13 @@ class DirectSerial:
 
     def drive_with_heading(self, speed: int, heading: int, reverse: bool = False) -> bool:
         """Drive at speed toward heading."""
+        self._drain_buffer()  # Clear async data before drive
         flags = 1 if reverse else 0
         return self._send(commands.drive_with_heading(speed, heading, flags))
 
     def raw_motors(self, left_speed: int, right_speed: int) -> bool:
         """Direct motor control. Negative = reverse."""
+        self._drain_buffer()  # Clear async data before drive
         left_mode = 2 if left_speed < 0 else (1 if left_speed > 0 else 0)
         right_mode = 2 if right_speed < 0 else (1 if right_speed > 0 else 0)
         return self._send(commands.raw_motors(
@@ -124,6 +260,7 @@ class DirectSerial:
 
     def stop(self) -> bool:
         """Stop the robot."""
+        self._drain_buffer()  # Clear async data
         return self._send(commands.stop())
 
     def set_all_leds(self, r: int, g: int, b: int) -> bool:
@@ -322,14 +459,18 @@ class DirectSerial:
         """Drive forward a specified distance in meters.
 
         Uses RVR's internal position controller for accurate movement.
+        If movement tracker is available, waits for completion notification.
+        Otherwise falls back to time-based estimation.
 
         Args:
             distance: Distance in meters
             speed: Speed in m/s (default 0.5, max ~1.555)
 
         Returns:
-            True if command sent
+            True if movement completed successfully
         """
+        self._drain_buffer()  # Clear async data before drive
+
         # Reset yaw so current orientation = heading 0
         self.reset_yaw()
         time.sleep(0.1)
@@ -338,28 +479,45 @@ class DirectSerial:
         self.reset_locator()
         time.sleep(0.1)
 
-        # Drive to position (0, distance) = forward from current orientation
+        # Calculate fallback time in case notification doesn't arrive
+        estimated_time = (distance / speed) + 0.5
+
+        # Start movement tracking if available
+        if self._movement_tracker and self._use_movement_notifications:
+            self._movement_tracker.start_movement(timeout=estimated_time + 2.0)
+
+        # Send drive command
         self._send(commands.drive_to_position_si(0.0, 0.0, distance, speed, 0))
 
-        # Wait for movement to complete (estimate based on distance/speed + buffer)
-        estimated_time = (distance / speed) + 0.5
-        time.sleep(estimated_time)
-
-        return True
+        # Wait for completion
+        if self._movement_tracker and self._use_movement_notifications:
+            # Wait for notification with fallback
+            completed = self._movement_tracker.wait_for_completion(
+                timeout=estimated_time + 2.0,
+                fallback_time=estimated_time
+            )
+            logger.debug(f"drive_forward_meters: completed={completed}")
+            return completed
+        else:
+            # Fallback: time-based estimation
+            time.sleep(estimated_time)
+            return True
 
     def drive_backward_meters(self, distance: float, speed: float = 0.5) -> bool:
         """Drive backward a specified distance in meters.
 
-        Uses RVR's internal position controller. Resets yaw first so
-        backward is relative to current orientation.
+        Uses RVR's internal position controller with reverse flag (0x01)
+        for accurate backward movement without turning around.
 
         Args:
             distance: Distance in meters
             speed: Speed in m/s (default 0.5, max ~1.555)
 
         Returns:
-            True if command sent
+            True if movement completed successfully
         """
+        self._drain_buffer()  # Clear async data before drive
+
         # Reset yaw so current orientation = heading 0
         self.reset_yaw()
         time.sleep(0.1)
@@ -368,14 +526,29 @@ class DirectSerial:
         self.reset_locator()
         time.sleep(0.1)
 
-        # Drive to position (0, -distance) = backward from current orientation
-        self._send(commands.drive_to_position_si(0.0, 0.0, -distance, speed, 0))
-
-        # Wait for movement to complete
+        # Calculate fallback time
         estimated_time = (distance / speed) + 0.5
-        time.sleep(estimated_time)
 
-        return True
+        # Start movement tracking if available
+        if self._movement_tracker and self._use_movement_notifications:
+            self._movement_tracker.start_movement(timeout=estimated_time + 2.0)
+
+        # Send drive command with reverse flag (0x01)
+        # Drive to negative Y (behind us) with reverse flag = drive backward without turning
+        self._send(commands.drive_to_position_si(0.0, 0.0, -distance, speed, 0x01))
+
+        # Wait for completion
+        if self._movement_tracker and self._use_movement_notifications:
+            completed = self._movement_tracker.wait_for_completion(
+                timeout=estimated_time + 2.0,
+                fallback_time=estimated_time
+            )
+            logger.debug(f"drive_backward_meters: completed={completed}")
+            return completed
+        else:
+            # Fallback: time-based estimation
+            time.sleep(estimated_time)
+            return True
 
     # ========================================================================
     # Phase 1: Temperature Sensors
