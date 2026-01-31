@@ -82,12 +82,14 @@ def next_seq() -> int:
 def build_packet(did: int, cid: int, target: int, data: bytes = b"",
                  request_response: bool = False) -> bytes:
     """Build a complete packet ready to send."""
-    flags = FLAG_HAS_TARGET | FLAG_HAS_SOURCE
+    # SDK sets IS_ACTIVITY and HAS_TARGET, but NOT HAS_SOURCE
+    flags = FLAG_HAS_TARGET | FLAG_IS_ACTIVITY
     if request_response:
         flags |= FLAG_REQUEST_RESPONSE
 
     seq = next_seq()
-    header = bytes([flags, target, SOURCE_HOST, did, cid, seq])
+    # No source byte - SDK doesn't include it
+    header = bytes([flags, target, did, cid, seq])
     content = header + data
     content_with_chk = content + bytes([checksum(content)])
 

@@ -12,6 +12,18 @@ from .movement import MovementTracker
 
 logger = logging.getLogger(__name__)
 
+# Debug log file for serial communication
+_DEBUG_FILE = "/tmp/rvr_serial_debug.log"
+
+def _debug_log(msg: str):
+    """Write debug message to file."""
+    try:
+        with open(_DEBUG_FILE, "a") as f:
+            f.write(f"{time.time():.3f} {msg}\n")
+            f.flush()
+    except Exception:
+        pass
+
 
 class DirectSerial:
     """Synchronous direct serial connection to RVR for low-latency commands.
@@ -44,9 +56,12 @@ class DirectSerial:
         """Open serial connection and start dispatcher."""
         with self._lock:
             if self._serial and self._serial.is_open:
+                _debug_log(f"Already connected to {self._port}")
                 return True
             try:
+                _debug_log(f"Opening {self._port} at {self._baud} baud")
                 self._serial = serial.Serial(self._port, self._baud, timeout=0.1)
+                _debug_log(f"Serial opened: {self._serial.is_open}")
 
                 # Start dispatcher if enabled
                 if self._use_dispatcher:
@@ -54,7 +69,7 @@ class DirectSerial:
 
                 return True
             except Exception as e:
-                logger.error(f"Failed to connect: {e}")
+                _debug_log(f"Connect failed: {e}")
                 return False
 
     def disconnect(self):
@@ -128,13 +143,15 @@ class DirectSerial:
         """Send packet (fire-and-forget)."""
         with self._lock:
             if not self._serial or not self._serial.is_open:
+                _debug_log("_send: serial not open")
                 return False
             try:
+                _debug_log(f"TX: {packet.hex()}")
                 self._serial.write(packet)
                 self._serial.flush()
                 return True
             except Exception as e:
-                logger.error(f"Send failed: {e}")
+                _debug_log(f"Send failed: {e}")
                 return False
 
     def _drain_buffer(self) -> int:
@@ -196,6 +213,7 @@ class DirectSerial:
         """
         with self._lock:
             if not self._serial or not self._serial.is_open:
+                _debug_log("_send_and_wait_legacy: serial not open")
                 return None
 
             try:
@@ -203,6 +221,7 @@ class DirectSerial:
                 self._serial.reset_input_buffer()
 
                 # Send command
+                _debug_log(f"TX: {packet.hex()}")
                 self._serial.write(packet)
                 self._serial.flush()
 
@@ -217,19 +236,23 @@ class DirectSerial:
 
                         # Check if we have a complete packet (SOP...EOP)
                         if len(buffer) >= 2 and buffer[-1] == 0xD8:  # EOP
+                            _debug_log(f"RX: {bytes(buffer).hex()}")
                             try:
                                 response = parse_response(bytes(buffer))
+                                _debug_log(f"Parsed: did={response.did:#x} cid={response.cid:#x} seq={response.seq}")
                                 return response
-                            except ValueError:
+                            except ValueError as e:
                                 # Not a valid packet yet, keep reading
+                                _debug_log(f"Parse failed: {e}")
                                 pass
 
                     # Small sleep to avoid busy-waiting
                     time.sleep(0.001)
 
+                _debug_log(f"Timeout {timeout}s, got {len(buffer)} bytes: {bytes(buffer).hex() if buffer else 'none'}")
                 return None  # Timeout
             except Exception as e:
-                logger.error(f"Legacy send_and_wait failed: {e}")
+                _debug_log(f"Exception: {e}")
                 return None
 
     # High-level commands
