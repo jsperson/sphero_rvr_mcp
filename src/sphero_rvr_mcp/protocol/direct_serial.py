@@ -49,7 +49,7 @@ class DirectSerial:
         self._movement_tracker: Optional[MovementTracker] = None
 
         # Feature flags
-        self._use_dispatcher = False  # Disabled - causing stability issues
+        self._use_dispatcher = True  # Enabled - packet header parsing bug fixed
         self._use_movement_notifications = False  # Disabled with dispatcher
 
     def connect(self) -> bool:

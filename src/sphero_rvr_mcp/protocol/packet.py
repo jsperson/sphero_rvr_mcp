@@ -135,19 +135,24 @@ def get_packet_header(packet: bytes) -> tuple:
 
     flags = content[0]
 
-    # Check if packet has target/source fields
+    # Parse header dynamically based on flags (like parse_response does)
+    idx = 1  # Start after flags byte
+
+    # Skip target if present
     if flags & FLAG_HAS_TARGET:
-        # Full format: flags, target, source, did, cid, seq
-        if len(content) < 7:
-            raise ValueError(f"Content too short for full packet: {len(content)} bytes")
-        did = content[3]
-        cid = content[4]
-        seq = content[5]
-    else:
-        # Simplified format: flags, did, cid, seq
-        did = content[1]
-        cid = content[2]
-        seq = content[3]
+        idx += 1  # target byte
+
+    # Skip source if present (note: build_packet doesn't include source)
+    if flags & FLAG_HAS_SOURCE:
+        idx += 1  # source byte
+
+    # Now read did, cid, seq
+    if idx + 3 > len(content) - 1:  # -1 for checksum
+        raise ValueError(f"Content too short for did/cid/seq: need {idx+3}, have {len(content)-1}")
+
+    did = content[idx]
+    cid = content[idx + 1]
+    seq = content[idx + 2]
 
     return (did, cid, seq)
 
