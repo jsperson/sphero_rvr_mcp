@@ -9,6 +9,8 @@ Features:
 
 import asyncio
 import math
+import os
+import time
 from fastmcp import FastMCP
 
 from .config import load_config_from_env
@@ -26,6 +28,22 @@ log_format = config.get("log_format", "json")
 configure_logging(log_level, log_format)
 
 logger = get_logger(__name__)
+
+# Debug logging - disabled by default, enable with SPHERO_RVR_DEBUG=1
+_DEBUG_ENABLED = os.environ.get("SPHERO_RVR_DEBUG", "").lower() in ("1", "true", "yes")
+_DEBUG_FILE = "/tmp/rvr_mcp_debug.log" if _DEBUG_ENABLED else None
+
+
+def _debug_log(msg: str):
+    """Write debug message to file if debug is enabled."""
+    if _DEBUG_FILE is None:
+        return
+    try:
+        with open(_DEBUG_FILE, "a") as f:
+            f.write(f"{time.time():.3f} {msg}\n")
+            f.flush()
+    except Exception:
+        pass
 
 
 def calculate_heading_from_magnetometer(x: float, y: float) -> float:
@@ -82,15 +100,6 @@ connection_manager = ConnectionManager(
     state_manager=state_manager,
 )
 
-# Services are disabled with DirectSerial architecture
-# The tools use connection_manager.direct_serial directly
-_connection_service = None
-_movement_service = None
-_sensor_service = None
-_led_service = None
-_safety_service = None
-_ir_service = None
-
 # Background tasks
 _initialized = False
 
@@ -127,37 +136,19 @@ async def shutdown_server():
     logger.info("server_shutdown_complete")
 
 
-# Initialize services after first connection
-async def ensure_services_initialized():
-    """Ensure services are initialized after connection.
+# Speed limit helper for drive commands
+async def _apply_speed_limit(speed: int) -> int:
+    """Apply speed limit to a speed value.
 
-    NOTE: With DirectSerial architecture, we bypass SDK-based services entirely.
-    This function is now a no-op to avoid initialization errors.
+    Args:
+        speed: Requested speed 0-255
+
+    Returns:
+        Limited speed 0-255
     """
-    # DirectSerial bypasses services layer - no initialization needed
-    return
-
-    # Create sensor stream manager
-    sensor_manager = SensorStreamManager(
-        rvr=connection_manager.rvr,
-        state_manager=state_manager,
-    )
-
-    # Create safety monitor
-    safety_monitor = SafetyMonitor(
-        rvr=connection_manager.rvr,
-        state_manager=state_manager,
-    )
-
-    # Create services
-    _connection_service = ConnectionService(connection_manager)
-    _movement_service = MovementService(connection_manager, command_queue, safety_monitor)
-    _sensor_service = SensorService(connection_manager, sensor_manager)
-    _led_service = LEDService(connection_manager, command_queue)
-    _safety_service = SafetyService(safety_monitor)
-    _ir_service = IRService(connection_manager, command_queue)
-
-    logger.info("services_initialized")
+    limit = await state_manager.safety_state.get_speed_limit()
+    max_speed = int(255 * limit / 100.0)
+    return min(speed, max_speed)
 
 
 def _pivot_blocking(direct_serial, degrees: float, speed: int) -> dict:
@@ -220,52 +211,32 @@ def register_tools():
     @mcp.tool()
     async def test_slow_return() -> dict:
         """Test tool that takes 3 seconds."""
-        import time
-        with open("/tmp/rvr_test_slow.log", "a") as f:
-            f.write(f"{time.time()} Test slow starting\n")
-            f.flush()
+        _debug_log("Test slow starting")
         await asyncio.sleep(3)
-        with open("/tmp/rvr_test_slow.log", "a") as f:
-            f.write(f"{time.time()} Test slow returning\n")
-            f.flush()
+        _debug_log("Test slow returning")
         return {"success": True, "message": "Slow return after 3 seconds"}
 
     @mcp.tool()
     async def connect_simple() -> dict:
         """Simple connect test without parameters."""
-        import time
-        with open("/tmp/rvr_connect_simple.log", "a") as f:
-            f.write(f"{time.time()} connect_simple called\n")
-            f.flush()
+        _debug_log("connect_simple called")
         return {"success": True, "message": "Simple connect works"}
 
     @mcp.tool()
     async def connect(port: str = "/dev/ttyAMA0", baud: int = 115200) -> dict:
         """Connect to the Sphero RVR robot and wake it up."""
-        import time
-        with open("/tmp/rvr_mcp_debug.log", "a") as f:
-            f.write(f"{time.time()} TOOL_CONNECT_CALLED port={port} baud={baud}\n")
-            f.flush()
-        logger.info("TOOL_CONNECT_CALLED", port=port, baud=baud)
+        _debug_log(f"TOOL_CONNECT_CALLED port={port} baud={baud}")
+        logger.info("connect_called", port=port, baud=baud)
 
         # Direct connection - bypass service layer entirely
         try:
-            with open("/tmp/rvr_mcp_debug.log", "a") as f:
-                f.write(f"{time.time()} TOOL_CONNECT_STARTING_AWAIT\n")
-                f.flush()
-            logger.info("TOOL_CONNECT_STARTING_AWAIT")
+            _debug_log("TOOL_CONNECT_STARTING_AWAIT")
             result = await asyncio.wait_for(
                 connection_manager.connect(port, baud),
                 timeout=10.0  # 10 second timeout
             )
-            with open("/tmp/rvr_mcp_debug.log", "a") as f:
-                f.write(f"{time.time()} TOOL_CONNECT_COMPLETED result={result}\n")
-                f.flush()
-            logger.info("TOOL_CONNECT_COMPLETED", result=result)
-            with open("/tmp/rvr_mcp_debug.log", "a") as f:
-                f.write(f"{time.time()} TOOL_CONNECT_RETURNING\n")
-                f.flush()
-            logger.info("TOOL_CONNECT_RETURNING")
+            _debug_log(f"TOOL_CONNECT_COMPLETED result={result}")
+            logger.info("connect_completed", result=result)
             return result
         except asyncio.TimeoutError:
             logger.error("connection_timeout", port=port, timeout_seconds=10)
@@ -274,14 +245,14 @@ def register_tools():
                 await connection_manager.disconnect()
             except Exception as e:
                 logger.warning("cleanup_after_timeout_failed", error=str(e))
-            logger.info("TOOL_CONNECT_TIMEOUT_RETURNING")
+            _debug_log("TOOL_CONNECT_TIMEOUT")
             return {
                 "success": False,
                 "error": "Connection timed out after 10 seconds"
             }
         except Exception as e:
             logger.error("connection_exception", error=str(e), error_type=type(e).__name__)
-            logger.info("TOOL_CONNECT_EXCEPTION_RETURNING")
+            _debug_log(f"TOOL_CONNECT_EXCEPTION: {e}")
             return {
                 "success": False,
                 "error": f"Connection failed: {str(e)}"
@@ -318,13 +289,18 @@ def register_tools():
     @mcp.tool()
     async def drive_with_heading(speed: int, heading: int, reverse: bool = False) -> dict:
         """Drive at speed toward heading."""
-        # Fast path: direct serial
-        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
-            ok = connection_manager.direct_serial.drive_with_heading(speed, heading, reverse)
-            return {"success": ok}
-        # Fallback: SDK path
-        await ensure_services_initialized()
-        return await _movement_service.drive_with_heading(speed, heading, reverse)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # Check emergency stop
+        if await state_manager.safety_state.is_emergency_stopped():
+            return {"success": False, "error": "Emergency stop is active"}
+
+        # Apply speed limit
+        limited_speed = await _apply_speed_limit(speed)
+
+        ok = connection_manager.direct_serial.drive_with_heading(limited_speed, heading, reverse)
+        return {"success": ok, "requested_speed": speed, "actual_speed": limited_speed}
 
     @mcp.tool()
     async def drive_tank(left_velocity: float, right_velocity: float) -> dict:
@@ -355,13 +331,11 @@ def register_tools():
     @mcp.tool()
     async def stop() -> dict:
         """Stop RVR."""
-        # Fast path: direct serial
-        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
-            ok = connection_manager.direct_serial.stop()
-            return {"success": ok}
-        # Fallback: SDK path
-        await ensure_services_initialized()
-        return await _movement_service.stop()
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.stop()
+        return {"success": ok}
 
     @mcp.tool()
     async def emergency_stop() -> dict:
@@ -384,24 +358,20 @@ def register_tools():
     @mcp.tool()
     async def reset_yaw() -> dict:
         """Reset yaw."""
-        # Fast path: direct serial
-        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
-            ok = connection_manager.direct_serial.reset_yaw()
-            return {"success": ok}
-        # Fallback: SDK path
-        await ensure_services_initialized()
-        return await _movement_service.reset_yaw()
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.reset_yaw()
+        return {"success": ok}
 
     @mcp.tool()
     async def reset_locator() -> dict:
         """Reset locator."""
-        # Fast path: direct serial
-        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
-            ok = connection_manager.direct_serial.reset_locator()
-            return {"success": ok}
-        # Fallback: SDK path
-        await ensure_services_initialized()
-        return await _movement_service.reset_locator()
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.reset_locator()
+        return {"success": ok}
 
     @mcp.tool()
     async def pivot(degrees: float, speed: int = 0) -> dict:
@@ -427,7 +397,7 @@ def register_tools():
             return {"success": False, "error": "Emergency stop is active"}
 
         # Run the blocking pivot operation in an executor
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(
                 None,
@@ -466,7 +436,7 @@ def register_tools():
             return {"success": False, "error": "Emergency stop is active"}
 
         # Run blocking movement call in executor to not block the event loop
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             ok = await loop.run_in_executor(
                 None,
@@ -503,7 +473,7 @@ def register_tools():
             return {"success": False, "error": "Emergency stop is active"}
 
         # Run blocking movement call in executor to not block the event loop
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             ok = await loop.run_in_executor(
                 None,
@@ -520,19 +490,27 @@ def register_tools():
     @mcp.tool()
     async def set_all_leds(red: int, green: int, blue: int) -> dict:
         """Set all LEDs."""
-        # Fast path: direct serial
-        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
-            ok = connection_manager.direct_serial.set_all_leds(red, green, blue)
-            return {"success": ok}
-        # Fallback: SDK path
-        await ensure_services_initialized()
-        return await _led_service.set_all_leds(red, green, blue)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # Validate RGB values
+        for name, val in [("red", red), ("green", green), ("blue", blue)]:
+            if not (0 <= val <= 255):
+                return {"success": False, "error": f"{name} must be 0-255, got {val}"}
+
+        ok = connection_manager.direct_serial.set_all_leds(red, green, blue)
+        return {"success": ok}
 
     @mcp.tool()
     async def set_led(led_group: str, red: int, green: int, blue: int) -> dict:
         """Set specific LED group."""
         if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
             return {"success": False, "error": "Not connected"}
+
+        # Validate RGB values
+        for name, val in [("red", red), ("green", green), ("blue", blue)]:
+            if not (0 <= val <= 255):
+                return {"success": False, "error": f"{name} must be 0-255, got {val}"}
 
         # Valid LED group names
         valid_groups = [
@@ -555,13 +533,11 @@ def register_tools():
     @mcp.tool()
     async def turn_leds_off() -> dict:
         """Turn off all LEDs."""
-        # Fast path: direct serial
-        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
-            ok = connection_manager.direct_serial.set_all_leds(0, 0, 0)
-            return {"success": ok}
-        # Fallback: SDK path
-        await ensure_services_initialized()
-        return await _led_service.turn_leds_off()
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.set_all_leds(0, 0, 0)
+        return {"success": ok}
 
     # Sensor tools
     @mcp.tool()
@@ -604,7 +580,11 @@ def register_tools():
 
     @mcp.tool()
     async def get_sensor_data(sensors: list = None) -> dict:
-        """Get sensor data."""
+        """Get sensor data.
+
+        Note: Sensor queries use blocking serial I/O. Each query typically
+        completes in <100ms but may block the event loop briefly.
+        """
         if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
             return {"success": False, "error": "Not connected"}
 
@@ -738,35 +718,41 @@ def register_tools():
     @mcp.tool()
     async def send_ir_message(code: int, strength: int = 32) -> dict:
         """Send IR message."""
-        # Fast path: direct serial
-        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
-            ok = connection_manager.direct_serial.send_ir_message(code, strength)
-            return {"success": ok}
-        # Fallback: SDK path
-        await ensure_services_initialized()
-        return await _ir_service.send_ir_message(code, strength)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # Validate IR code and strength
+        if not (0 <= code <= 7):
+            return {"success": False, "error": f"IR code must be 0-7, got {code}"}
+        if not (0 <= strength <= 64):
+            return {"success": False, "error": f"IR strength must be 0-64, got {strength}"}
+
+        ok = connection_manager.direct_serial.send_ir_message(code, strength)
+        return {"success": ok}
 
     @mcp.tool()
     async def start_ir_broadcasting(far_code: int, near_code: int) -> dict:
         """Start IR broadcasting."""
-        # Fast path: direct serial
-        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
-            ok = connection_manager.direct_serial.start_ir_broadcasting(far_code, near_code)
-            return {"success": ok}
-        # Fallback: SDK path
-        await ensure_services_initialized()
-        return await _ir_service.start_ir_broadcasting(far_code, near_code)
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        # Validate IR codes
+        if not (0 <= far_code <= 7):
+            return {"success": False, "error": f"far_code must be 0-7, got {far_code}"}
+        if not (0 <= near_code <= 7):
+            return {"success": False, "error": f"near_code must be 0-7, got {near_code}"}
+
+        ok = connection_manager.direct_serial.start_ir_broadcasting(far_code, near_code)
+        return {"success": ok}
 
     @mcp.tool()
     async def stop_ir_broadcasting() -> dict:
         """Stop IR broadcasting."""
-        # Fast path: direct serial
-        if connection_manager.direct_serial and connection_manager.direct_serial.is_connected:
-            ok = connection_manager.direct_serial.stop_ir_broadcasting()
-            return {"success": ok}
-        # Fallback: SDK path
-        await ensure_services_initialized()
-        return await _ir_service.stop_ir_broadcasting()
+        if not connection_manager.direct_serial or not connection_manager.direct_serial.is_connected:
+            return {"success": False, "error": "Not connected"}
+
+        ok = connection_manager.direct_serial.stop_ir_broadcasting()
+        return {"success": ok}
 
     # ========================================================================
     # Phase 1: Temperature Sensors

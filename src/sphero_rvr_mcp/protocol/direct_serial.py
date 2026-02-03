@@ -1,6 +1,7 @@
 """Direct serial connection to RVR - bypasses SDK async overhead."""
 
 import logging
+import os
 import serial
 import threading
 import time
@@ -12,11 +13,18 @@ from .movement import MovementTracker
 
 logger = logging.getLogger(__name__)
 
-# Debug log file for serial communication
-_DEBUG_FILE = "/tmp/rvr_serial_debug.log"
+# Debug logging - disabled by default, enable with SPHERO_RVR_DEBUG=1
+_DEBUG_ENABLED = os.environ.get("SPHERO_RVR_DEBUG", "").lower() in ("1", "true", "yes")
+_DEBUG_FILE = "/tmp/rvr_serial_debug.log" if _DEBUG_ENABLED else None
+
+# Maximum buffer size before reset (prevents unbounded growth on malformed data)
+_MAX_BUFFER_SIZE = 1024
+
 
 def _debug_log(msg: str):
-    """Write debug message to file."""
+    """Write debug message to file if debug is enabled."""
+    if _DEBUG_FILE is None:
+        return
     try:
         with open(_DEBUG_FILE, "a") as f:
             f.write(f"{time.time():.3f} {msg}\n")
@@ -103,6 +111,12 @@ class DirectSerial:
             logger.debug("Dispatcher started successfully")
         except Exception as e:
             logger.error(f"Failed to start dispatcher: {e}")
+            # Clean up dispatcher if it was created and started
+            if self._dispatcher:
+                try:
+                    self._dispatcher.stop()
+                except Exception:
+                    pass
             self._dispatcher = None
             self._movement_tracker = None
 
@@ -244,7 +258,10 @@ class DirectSerial:
                             except ValueError as e:
                                 # Not a valid packet yet, keep reading
                                 _debug_log(f"Parse failed: {e}")
-                                pass
+                                # Prevent unbounded buffer growth
+                                if len(buffer) > _MAX_BUFFER_SIZE:
+                                    _debug_log(f"Buffer overflow ({len(buffer)} bytes), clearing")
+                                    buffer.clear()
 
                     # Small sleep to avoid busy-waiting
                     time.sleep(0.001)

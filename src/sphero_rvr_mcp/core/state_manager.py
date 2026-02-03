@@ -311,8 +311,25 @@ class StateManager:
         }
 
     async def reset(self):
-        """Reset all state to initial values."""
-        self.system_state = SystemState()
-        self.connection_info = ConnectionInfo()
-        self.safety_state = SafetyState()
-        self.sensor_state = SensorState()
+        """Reset all state to initial values (in-place to preserve references)."""
+        # Reset system state
+        async with self.system_state._lock:
+            self.system_state.connection_state = ConnectionState.DISCONNECTED
+            self.system_state.last_state_change = time.time()
+
+        # Reset connection info
+        await self.connection_info.clear_connection_info()
+
+        # Reset safety state
+        async with self.safety_state._lock:
+            self.safety_state.emergency_stopped = False
+            self.safety_state.speed_limit_percent = 50.0
+            self.safety_state.command_timeout_seconds = 5.0
+            self.safety_state.last_command_time = None
+
+        # Reset sensor state
+        async with self.sensor_state._lock:
+            self.sensor_state.streaming_active = False
+            self.sensor_state.streaming_sensors = []
+            self.sensor_state.streaming_interval_ms = 250
+            self.sensor_state.sensor_data_cache = {}

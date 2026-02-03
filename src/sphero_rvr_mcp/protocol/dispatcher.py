@@ -46,6 +46,10 @@ class SerialDispatcher:
     Thread Safety:
     - All public methods are thread-safe
     - Internal state protected by locks
+    - IMPORTANT: Serial writes are NOT synchronized with DirectSerial._send().
+      When using the dispatcher, ALL writes should go through send_and_wait()
+      to ensure proper request-response matching. Do not mix dispatcher
+      and direct _send() calls for the same serial port.
     """
 
     def __init__(self, serial_port: serial.Serial):
@@ -315,6 +319,9 @@ class SerialDispatcher:
 
     def _dispatch_response(self, response: ParsedResponse) -> None:
         """Route a response to pending request or notification handler."""
+        pending_to_complete = None
+        handler = None
+
         with self._lock:
             # First, check if this matches a pending request
             pending = self._pending.get(response.seq)
@@ -323,9 +330,7 @@ class SerialDispatcher:
                 if pending.did == response.did and pending.cid == response.cid:
                     del self._pending[response.seq]
                     self._stats['packets_dispatched'] += 1
-                    # Set result outside lock to avoid deadlock
-                    pending.future.set_result(response)
-                    return
+                    pending_to_complete = pending
                 else:
                     # Seq matches but did/cid don't - possible collision
                     logger.debug(
@@ -333,10 +338,18 @@ class SerialDispatcher:
                         f"got did={response.did:#x}, cid={response.cid:#x}"
                     )
 
-            # Check for notification handler
-            handler = self._notification_handlers.get((response.did, response.cid))
-            if handler:
-                self._stats['notifications'] += 1
+            # Check for notification handler (only if no pending request matched)
+            if pending_to_complete is None:
+                handler = self._notification_handlers.get((response.did, response.cid))
+                if handler:
+                    self._stats['notifications'] += 1
+                else:
+                    self._stats['packets_dropped'] += 1
+
+        # Complete pending request outside lock to avoid deadlock
+        if pending_to_complete:
+            pending_to_complete.future.set_result(response)
+            return
 
         # Call handler outside lock
         if handler:
@@ -345,9 +358,6 @@ class SerialDispatcher:
             except Exception as e:
                 logger.error(f"Error in notification handler: {e}")
         else:
-            # No matching pending request or handler
-            with self._lock:
-                self._stats['packets_dropped'] += 1
             logger.debug(
                 f"Dropped packet: did={response.did:#x}, cid={response.cid:#x}, seq={response.seq}"
             )

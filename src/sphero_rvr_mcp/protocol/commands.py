@@ -177,8 +177,12 @@ def drive_to_position_si(yaw_angle: float, x: float, y: float, linear_speed: flo
     Returns:
         Command packet bytes
 
-    Note: This command uses a simplified packet format (FLAGS=0x06) without
-    target/source bytes, as per the Sphero CircuitPython SDK.
+    Note: This command intentionally uses a simplified packet format (FLAGS=0x06)
+    without target/source bytes, matching the Sphero CircuitPython SDK implementation.
+    This is different from build_packet() which includes the target byte.
+    The RVR firmware accepts both formats, but this format was validated to work
+    correctly with the drive-to-position command. Do not use get_packet_header()
+    on packets built by this function.
     """
     from .packet import SOP, EOP, escape_buffer, next_seq
 

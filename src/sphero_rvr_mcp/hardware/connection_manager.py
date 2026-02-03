@@ -210,14 +210,15 @@ class ConnectionManager:
         Simple sleep-based approach since we don't have async responses in DirectSerial.
 
         Args:
-            timeout: Maximum time to wait for readiness
+            timeout: Maximum time to wait for readiness (minimum 2.0s required)
 
         Raises:
             RVRConnectionError: RVR failed to become ready
         """
-        # Simple 2-second sleep (SDK standard)
-        await asyncio.sleep(2.0)
-        log_connection_event(logger, "rvr_ready", elapsed_ms=2000)
+        # RVR requires minimum 2 seconds to initialize after wake
+        wait_time = max(2.0, timeout)
+        await asyncio.sleep(wait_time)
+        log_connection_event(logger, "rvr_ready", elapsed_ms=int(wait_time * 1000))
 
     async def _cleanup(self):
         """Cleanup DirectSerial resources."""

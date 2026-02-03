@@ -1,6 +1,7 @@
 """RVR packet building - minimal implementation for direct serial."""
 
 import struct
+import threading
 
 # Protocol constants
 SOP = 0x8D
@@ -29,6 +30,16 @@ DID_IO = 0x1A
 TARGET_MCU = 0x02  # Drive, sensors
 TARGET_BT = 0x01   # LEDs, Bluetooth
 SOURCE_HOST = 0x00
+
+# Value limits for validation
+MAX_SPEED = 255
+MIN_SPEED = 0
+MAX_RGB = 255
+MIN_RGB = 0
+MAX_IR_CODE = 7
+MIN_IR_CODE = 0
+MAX_IR_STRENGTH = 64
+MIN_IR_STRENGTH = 0
 
 
 def checksum(data: bytes) -> int:
@@ -72,11 +83,15 @@ def unescape_buffer(data: bytes) -> bytes:
 
 
 _seq = 0
+_seq_lock = threading.Lock()
+
 
 def next_seq() -> int:
+    """Get next sequence number (thread-safe)."""
     global _seq
-    _seq = (_seq + 1) & 0xFF
-    return _seq
+    with _seq_lock:
+        _seq = (_seq + 1) & 0xFF
+        return _seq
 
 
 def build_packet(did: int, cid: int, target: int, data: bytes = b"",
@@ -169,13 +184,6 @@ class ParsedResponse:
     @property
     def is_response(self) -> bool:
         return bool(self.flags & FLAG_IS_RESPONSE)
-
-    @property
-    def error_code(self) -> int:
-        """Return error code if present (first byte of data), else 0."""
-        if len(self.data) > 0 and not self.is_response:
-            return self.data[0]
-        return 0
 
 
 def parse_response(buffer: bytes) -> ParsedResponse:
